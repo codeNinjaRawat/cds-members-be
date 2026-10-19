@@ -177,9 +177,22 @@ export function createApi(db: Db) {
   return server;
 }
 if (process.argv[1] && /server\.ts$/.test(process.argv[1])) {
+  const { assertProduction } = await import('../production.js');
+  assertProduction('API');   // production: refuses development shortcuts and missing secrets
   const port = Number(process.env.PORT ?? 4330); const db = openDb();
-  createApi(db).listen(port, async () => {
-    console.log(`API on http://localhost:${port} (adapter ${process.env.DB_ADAPTER || 'pg'}) – health: http://localhost:${port}/health`);
+  const server = createApi(db);
+  // a restart or an update (SIGTERM from docker / pm2 / systemd): finish the requests in flight, then close the database
+  let stopping = false;
+  const stop = (sig: string) => {
+    if (stopping) return; stopping = true;
+    console.log(`${sig}: finishing open requests, then stopping…`);
+    server.close(() => { void db.close().catch(() => {}).finally(() => process.exit(0)); });
+    setTimeout(() => process.exit(0), 10_000).unref();   // never hang a deploy
+  };
+  process.on('SIGTERM', () => stop('SIGTERM')); process.on('SIGINT', () => stop('SIGINT'));
+  const host = process.env.HOST || undefined;   // production: HOST=127.0.0.1 – only nginx and the apps on this server reach the API
+  server.listen(port, host, async () => {
+    console.log(`API on http://${host ?? 'localhost'}:${port} (adapter ${process.env.DB_ADAPTER || 'pg'}) – health: http://localhost:${port}/health`);
     // say right away whether the database is there (and ready), in plain words
     const { dbStatus, describe } = await import('../db/check.js');
     for (const line of describe(await dbStatus(db))) console.log(line);

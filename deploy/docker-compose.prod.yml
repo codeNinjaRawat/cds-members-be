@@ -1,0 +1,27 @@
+# Server with Docker: the API and the worker. PostgreSQL runs on the server itself (or elsewhere – DATABASE_URL).
+# From the membership folder:
+#   docker compose -f BE/deploy/docker-compose.prod.yml build
+#   docker compose -f BE/deploy/docker-compose.prod.yml run --rm api node --import tsx src/production.ts     # settings check
+#   docker compose -f BE/deploy/docker-compose.prod.yml run --rm api node --import tsx src/db/migrate.ts     # migrations
+#   docker compose -f BE/deploy/docker-compose.prod.yml up -d
+# network_mode host: 127.0.0.1 in DATABASE_URL is the server, and the API listens on HOST=127.0.0.1 only.
+services:
+  api:
+    build: { context: ../.., dockerfile: BE/Dockerfile }
+    image: membership-api
+    env_file: ../.env.production
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 15s
+    volumes: ["/srv/membership-files:/srv/files"]
+    logging: { driver: json-file, options: { max-size: "20m", max-file: "5" } }
+  worker:
+    image: membership-api
+    env_file: ../.env.production
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 60s
+    command: ["node", "--import", "tsx", "src/jobs/worker.ts"]
+    volumes: ["/srv/membership-files:/srv/files"]
+    logging: { driver: json-file, options: { max-size: "20m", max-file: "5" } }
+    depends_on: [api]

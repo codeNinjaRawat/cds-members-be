@@ -4,9 +4,12 @@
   "private": true,
   "type": "module",
   "description": "Membership platform API – PostgreSQL with row level security, one organization per transaction.",
+  "engines": {
+    "node": ">=20.6"
+  },
   "scripts": {
     "dev": "node --import tsx --import ./src/load-env.ts --watch src/http/server.ts",
-    "start": "tsx src/http/server.ts",
+    "start": "node --import tsx src/http/server.ts",
     "migrate": "node --import tsx --import ./src/load-env.ts src/db/migrate.ts",
     "seed": "node --import tsx --import ./src/load-env.ts src/db/seed.ts",
     "test:sql": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -At -f tests/rls.sql && psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -At -f tests/rls_all.sql",
@@ -20,6 +23,7 @@
     "geo:load": "tsx src/db/load-zips.ts",
     "start:local": "node --import tsx --import ./src/load-env.ts src/http/server.ts",
     "db:check": "node --import tsx --import ./src/load-env.ts src/db/check.ts",
+    "check:production": "node --import tsx --import ./src/load-env.ts src/production.ts",
     "import:wa": "node --import tsx --import ./src/load-env.ts src/db/import-wildapricot.ts",
     "report:members": "node --import tsx --import ./src/load-env.ts src/db/report.ts",
     "admins": "node --import tsx --import ./src/load-env.ts src/db/admins.ts",
@@ -36,12 +40,12 @@
   },
   "dependencies": {
     "pg": "^8.13.0",
+    "tsx": "^4.19.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",
     "@types/pg": "^8.11.10",
-    "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   }
 }
