@@ -24,3 +24,13 @@
   - isolation enforced by the database, not only by the code
 - **See:** `saas-architecture.md`, `api-contract-platform.md`, `research/saas-multitenancy.md`
 - **Status:** Active
+
+## 2026-10-15 – Events, groups, communication, configuration, renewals
+- **Decision:** Build the WildApricot options as org settings plus tenant tables (see `api-contract-community.md`). Event capacity is checked inside the payment transaction, and the waitlist gets the next free spot. Automatic groups are evaluated in SQL from member facts. The renewal lifecycle job is daily and idempotent. Photo ID files go to private storage with retention.
+- **Status:** Active
+
+## 2026-10-19 – Server PostgreSQL 18 on the membership server (3.18.46.122) – SECURITY TO-DO
+- Installed PostgreSQL 18.6 (Ubuntu 26.04 offers only 18; BE was tested on 16 – run npm run test:sql against it). MySQL (election) + phpMyAdmin untouched.
+- Databases: `membership` (live, owner membership_owner) and `membership_dev` (dev, owner membership_dev_owner); roles app_api / app_platform (NOLOGIN) granted to both owners; extensions pgcrypto, citext, pg_trgm; PUBLIC revoked. Passwords chosen and kept by the owner (not stored here).
+- Remote: listen_addresses=*, pg_hba hostssl + scram-sha-256 for the two owners on their own DB only.
+- **Owner decision: port 5432 open to 0.0.0.0/0 in AWS during development (dynamic IP). MUST be closed before go-live**: switch to SSH tunnel or allow only fixed server IPs; consider a separate low-privilege app login instead of the owner user for the BE.

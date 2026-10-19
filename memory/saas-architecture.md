@@ -77,7 +77,7 @@ The settings service stays as designed (`01-purpose.md`), but every setting is n
 - **Production seed (idempotent):**
   1. `saas_plans` (3 plans)
   2. `platform_settings`
-  3. `platform_staff` (owner: Akhter Alam)
+  3. `platform_staff` (owner: Mohammad (demo))
   4. **`orgs` row for ISGH:**
      - `client_no=1`, `slug='isgh'`, Network, yearly, `created_on='2026-09-01'`
      - legacy hosts member-web / member-admin

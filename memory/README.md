@@ -17,6 +17,8 @@ Memory for the **BE** app only. Shared, project-wide knowledge lives in
 | `api-contract-web.md` | Public endpoints the website already uses (must implement) – now per organization |
 | `saas-architecture.md` | **SaaS design**: organizations, ISGH = client #1, RLS data model, platform tables, security, billing, jobs, demo → BE mapping |
 | `api-contract-platform.md` | Endpoints for the SaaS panel and the org admin's platform calls |
+| `api-contract-community.md` | Events, groups, communication, configuration, renewals (WildApricot options) – tables, endpoints, jobs |
+| `database-environments.md` | local / server-dev / live databases, profiles (`--env=server-dev`), SSL setting, check + migrate commands |
 | `research/` | Research notes – one per feature, written before building |
 
 ## Rules

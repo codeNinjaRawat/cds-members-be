@@ -1,0 +1,22 @@
+# Local development: PostgreSQL 16 + the API + the worker. From the membership folder:
+#   docker compose -f BE/docker-compose.yml up --build
+#   docker compose -f BE/docker-compose.yml run --rm api npm run migrate && … run --rm api npm run seed
+services:
+  db:
+    image: postgres:16-alpine
+    environment: { POSTGRES_PASSWORD: postgres, POSTGRES_DB: membership }
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+  api:
+    build: { context: .., dockerfile: BE/Dockerfile }
+    env_file: .env
+    environment: { DATABASE_URL: "postgresql://postgres:postgres@db:5432/membership", PORT: "4330" }
+    ports: ["4330:4330"]
+    depends_on: [db]
+  worker:
+    build: { context: .., dockerfile: BE/Dockerfile }
+    env_file: .env
+    environment: { DATABASE_URL: "postgresql://postgres:postgres@db:5432/membership" }
+    command: ["npx", "tsx", "src/jobs/worker.ts"]
+    depends_on: [db]
+volumes: { pgdata: {} }

@@ -1,0 +1,4 @@
+zip,lat,lng,city,state_id,state_name,county_name,timezone
+77036,29.6985,-95.5404,Houston,TX,Texas,Harris,America/Chicago
+78701,30.2711,-97.7437,Austin,TX,Texas,Travis,America/Chicago
+"96815",21.2810,-157.8230,"Honolulu",HI,Hawaii,Honolulu,Pacific/Honolulu

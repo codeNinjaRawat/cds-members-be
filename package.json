@@ -1,0 +1,47 @@
+{
+  "name": "membership-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Membership platform API – PostgreSQL with row level security, one organization per transaction.",
+  "scripts": {
+    "dev": "node --import tsx --import ./src/load-env.ts --watch src/http/server.ts",
+    "start": "tsx src/http/server.ts",
+    "migrate": "node --import tsx --import ./src/load-env.ts src/db/migrate.ts",
+    "seed": "node --import tsx --import ./src/load-env.ts src/db/seed.ts",
+    "test:sql": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -At -f tests/rls.sql && psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -At -f tests/rls_all.sql",
+    "test:api": "tsx tests/api.test.ts && tsx tests/auth.test.ts && tsx tests/members.test.ts && tsx tests/website.test.ts && tsx tests/geo.test.ts && tsx tests/helpdesk.test.ts && tsx tests/events.test.ts && tsx tests/giving.test.ts && tsx tests/zakat.test.ts && tsx tests/comms.test.ts && tsx tests/jobs.test.ts && tsx tests/checkout.test.ts && tsx tests/files.test.ts && tsx tests/platform.test.ts && tsx tests/tenancy.test.ts && tsx tests/site.test.ts && tsx tests/documents.test.ts && tsx tests/records.test.ts && tsx tests/portal.test.ts && tsx tests/app.test.ts && tsx tests/dashboards.test.ts && tsx tests/governance.test.ts",
+    "test": "npm run test:sql && npm run test:api",
+    "typecheck": "tsc --noEmit -p .",
+    "seed:isgh": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f sql/seed/isgh.sql",
+    "worker": "node --import tsx --import ./src/load-env.ts src/jobs/worker.ts",
+    "test:fresh": "sh deploy/test.sh",
+    "test:app-contracts": "tsx tests/app-contracts.test.ts",
+    "geo:load": "tsx src/db/load-zips.ts",
+    "start:local": "node --import tsx --import ./src/load-env.ts src/http/server.ts",
+    "db:check": "node --import tsx --import ./src/load-env.ts src/db/check.ts",
+    "import:wa": "node --import tsx --import ./src/load-env.ts src/db/import-wildapricot.ts",
+    "report:members": "node --import tsx --import ./src/load-env.ts src/db/report.ts",
+    "admins": "node --import tsx --import ./src/load-env.ts src/db/admins.ts",
+    "db:test-sql": "node --import tsx --import ./src/load-env.ts src/db/sql-tests.ts",
+    "server-dev:check": "node --import tsx --import ./src/load-env.ts src/db/check.ts --env=server-dev --connect",
+    "server-dev:migrate": "node --import tsx --import ./src/load-env.ts src/db/migrate.ts --env=server-dev",
+    "server-dev:seed": "node --import tsx --import ./src/load-env.ts src/db/seed.ts --env=server-dev",
+    "server-dev:import-wa": "node --import tsx --import ./src/load-env.ts src/db/import-wildapricot.ts --env=server-dev",
+    "server-dev:report": "node --import tsx --import ./src/load-env.ts src/db/report.ts --env=server-dev",
+    "server-dev:admins": "node --import tsx --import ./src/load-env.ts src/db/admins.ts --env=server-dev",
+    "server-dev:test-sql": "node --import tsx --import ./src/load-env.ts src/db/sql-tests.ts --env=server-dev",
+    "dev:server-db": "node --import tsx --import ./src/load-env.ts --watch src/http/server.ts --env=server-dev",
+    "test:db-config": "tsx tests/db-config.test.ts"
+  },
+  "dependencies": {
+    "pg": "^8.13.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
