@@ -10,8 +10,10 @@ module.exports = {
       name: 'membership-api',
       cwd: __dirname + '/..',
       script: 'src/http/server.ts',
+      exec_mode: 'fork',            // never cluster: cluster mode drops the tsx loader and the .ts files cannot run
       interpreter: 'node',
       interpreter_args: '--import tsx --import ./src/load-env.ts',
+      node_args: '--import tsx --import ./src/load-env.ts',
       args: profile,
       env: { NODE_ENV: 'production' },
       instances: 1,                 // one process (MEMBERS_CACHE_SECONDS assumes one); scale later with a shared cache
@@ -24,8 +26,10 @@ module.exports = {
       name: 'membership-worker',
       cwd: __dirname + '/..',
       script: 'src/jobs/worker.ts',
+      exec_mode: 'fork',
       interpreter: 'node',
       interpreter_args: '--import tsx --import ./src/load-env.ts',
+      node_args: '--import tsx --import ./src/load-env.ts',
       args: profile,
       env: { NODE_ENV: 'production' },
       instances: 1,
