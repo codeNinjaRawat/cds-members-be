@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs';
 import { openDb, one, rows, type Db, type Statement } from './sql.js';
 import { saveDocument } from '../modules/projections.js';
 import { demoMembers } from '@/lib/members/members';
+import { MembershipSettingsSchema, PLAN_PRESETS, ISGH_WILDAPRICOT_LEVELS, type Plan } from '@/lib/content/membership';
 
 /* ---------------- reading the file ---------------- */
 const decode = (s: string) => s.replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))).replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
@@ -63,13 +64,44 @@ const phone = (v: string) => { let d = v.replace(/\D/g, ''); if (d.length === 11
 const yes = (v: string) => /^(yes|y|true|1)$/i.test(v.trim());
 const STATES: Record<string, string> = { texas: 'TX', taxas: 'TX', tx: 'TX', california: 'CA', virginia: 'VA', 'new york': 'NY', louisiana: 'LA', oklahoma: 'OK', florida: 'FL', georgia: 'GA', illinois: 'IL' };
 const state = (v: string) => { const t = v.trim().toLowerCase(); if (STATES[t]) return STATES[t]; return /^[a-z]{2}$/.test(t) ? t.toUpperCase() : ''; };
-/** Wild Apricot level → this organization's plan (Membership settings). The level itself is kept on the record. */
-export function planOf(level: string): 'single' | 'family' | 'life' {
+/** Wild Apricot level → plan id (the level's own name: individual, family, life-individual, life-family, checkomatic).
+ *  The organization's published plans must contain them – ensurePlans() adds any that are missing (hidden). */
+export function planOf(level: string): string {
   const l = level.toLowerCase();
-  if (l.includes('lifetime')) return 'life';
-  if (l.includes('family') || l.includes('checkomatic') || l.includes('spouse')) return 'family';
-  return 'single';
+  if (l.includes('lifetime')) return l.includes('family') || l.includes('spouse') ? 'life-family' : 'life-individual';
+  if (l.includes('checkomatic')) return 'checkomatic';
+  if (l.includes('family') || l.includes('spouse')) return 'family';
+  return 'individual';
 }
+const PLAN_SQL_CASE = `CASE WHEN lower(record->'wildapricot'->>'level') LIKE '%lifetime%' THEN CASE WHEN lower(record->'wildapricot'->>'level') ~ 'family|spouse' THEN 'life-family' ELSE 'life-individual' END
+  WHEN lower(record->'wildapricot'->>'level') LIKE '%checkomatic%' THEN 'checkomatic' WHEN lower(record->'wildapricot'->>'level') ~ 'family|spouse' THEN 'family' ELSE 'individual' END`;
+
+/** The published Membership settings must hold every plan the members use. --plan-preset <id> first replaces the plans
+ *  and rules with that preset (Membership rules › Plans › "Start from a preset"); plans still missing after that are
+ *  added hidden from the Wild Apricot levels as "… (Wild Apricot)", so nobody can join them but existing members keep them. */
+async function ensurePlans(db: Db, orgId: string, needed: string[], preset: string) {
+  const A = API(orgId);
+  const cur = await one<{ data: Record<string, unknown> }>(db, A, `SELECT data FROM app.documents WHERE key = 'membership-settings'`);
+  if (!cur) throw new Error('No published Membership settings – run npm run seed first.');
+  const doc = { ...cur.data } as { plans: Plan[]; rules: unknown };
+  let changed = false;
+  if (preset) {
+    const p = PLAN_PRESETS.find((x) => x.id === preset);
+    if (!p) throw new Error(`Unknown plan preset "${preset}" – one of: ${PLAN_PRESETS.map((x) => x.id).join(', ')}`);
+    doc.plans = structuredClone(p.plans); doc.rules = structuredClone(p.rules); changed = true;
+  }
+  for (const id of needed) {
+    if (doc.plans.some((x) => x.id === id)) continue;
+    const src = ISGH_WILDAPRICOT_LEVELS.find((x) => x.id === id) ?? ISGH_WILDAPRICOT_LEVELS.find((x) => x.id === 'individual')!;
+    doc.plans.push({ ...structuredClone(src), id, name: `${src.name} (Wild Apricot)`, visible: false, featured: false });
+    changed = true;
+  }
+  if (!changed) return [];
+  const parsed = MembershipSettingsSchema.parse(doc);
+  await saveDocument(db, orgId, 'membership-settings', parsed, 'Import', preset ? `Plans from the "${preset}" preset (Wild Apricot import)` : 'Plans used by imported members');
+  return parsed.plans.map((x) => `${x.name}${x.visible === false ? ' (hidden)' : ''}`);
+}
+
 /** Wild Apricot status → approved or not (the term decides active / expired; suspended / lapsed = not renewed). */
 const UNVERIFIED = /unver/i;   // Wild Apricot's own level is spelled "Unverfied Members"
 const approved = (status: string) => !/^pending - new$/i.test(status.trim()) && status.trim() !== '' && !UNVERIFIED.test(status);
@@ -93,7 +125,7 @@ export function toRows(table: string[][], today: string): { rows: Row[]; skipped
     const level = get(r, 'Membership level'); const status = get(r, 'Membership status');
     const since = realDay(day(get(r, 'Member since')) || day(get(r, 'Created on')), '1950-01-01', today) || today;
     const due = realDay(day(get(r, 'Renewal due')), '1990-01-01');
-    const plan = planOf(level); const lifetime = plan === 'life';
+    const plan = planOf(level); const lifetime = plan.startsWith('life');
     const ok = approved(status) && !UNVERIFIED.test(level); const stage = joinStage(level, status);
     const email = get(r, 'Email Address').toLowerCase();
     const zip5 = (/^(\d{5})/.exec(get(r, 'ZIP')) ?? [])[1] ?? '';
@@ -153,7 +185,7 @@ function batches<T>(list: T[], max = process.env.DB_ADAPTER === 'psql' ? 100_000
 async function main() {
   const args = process.argv.slice(2); const file = args.find((a) => !a.startsWith('--'));
   const flag = (f: string) => args.includes(f); const orgSlug = (args[args.indexOf('--org') + 1] && args.includes('--org')) ? args[args.indexOf('--org') + 1] : (process.env.DEFAULT_ORG ?? 'isgh');
-  if (!file) { console.log('Usage: npm run import:wa -- "path/to/Contacts.xml" [--org isgh] [--dry-run] [--keep-demo] [--keep-structure]'); process.exit(1); }
+  if (!file) { console.log('Usage: npm run import:wa -- "path/to/Contacts.xml" [--org isgh] [--dry-run] [--keep-demo] [--keep-structure] [--plan-preset isgh-2026]'); process.exit(1); }
   const text = readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
   const table = text.trimStart().startsWith('<') ? readExcelXml(text) : readCsv(text);
   const today = new Date().toISOString().slice(0, 10);
@@ -176,6 +208,10 @@ async function main() {
     await saveDocument(db, org.id, 'org-structure', st.doc, 'Import', 'Masjids and zones from the Wild Apricot export');
     console.log(`Published masjids and zones (${st.centers.length} masjids).`);
   }
+  const presetArg = args.includes('--plan-preset') ? String(args[args.indexOf('--plan-preset') + 1] ?? '') : '';
+  const used = await rows(db, A, `SELECT DISTINCT ${PLAN_SQL_CASE} AS id FROM app.members WHERE external_ids ? 'wildapricot'`) as { id: string }[];
+  const plans = await ensurePlans(db, org.id, [...new Set([...list.map((r) => r.plan), ...used.map((u) => u.id)])], presetArg);
+  if (plans.length) console.log(`Published plans: ${plans.join(' · ')}.`);
   const centerIds = new Map(((await rows(db, A, 'SELECT id::text, name FROM app.centers WHERE active')) as { id: string; name: string }[]).map((c) => [c.name, c.id]));
   const done = new Set(((await rows(db, A, `SELECT external_ids->>'wildapricot' AS x FROM app.members WHERE external_ids ? 'wildapricot'`)) as { x: string }[]).map((r) => r.x));
   const todo = list.filter((r) => !done.has(r.externalId));
@@ -238,6 +274,10 @@ async function main() {
         WHERE external_ids ? 'wildapricot' AND coalesce(record->>'joinStage', '') = '' AND ((coalesce(record->'wildapricot'->>'level', '') = '' AND coalesce(record->'wildapricot'->>'status', '') = '') OR record->'wildapricot'->>'level' ~* 'unver' OR record->'wildapricot'->>'status' ~* 'unver' OR record->'wildapricot'->>'status' ~* '^pending - new$') RETURNING id` },
     { sql: `UPDATE app.members SET approved_on = NULL WHERE external_ids ? 'wildapricot' AND record->>'joinStage' IN ('incomplete', 'applied') AND approved_on IS NOT NULL RETURNING id` },
     { sql: `UPDATE app.memberships x SET status = 'cancelled' FROM app.members m WHERE m.org_id = x.org_id AND m.id = x.member_id AND x.how = 'imported' AND x.status = 'active' AND m.record->>'joinStage' IN ('incomplete', 'applied') RETURNING x.id` }]);
+  const moved = await db.run(A, [
+    { sql: `UPDATE app.members SET plan = ${PLAN_SQL_CASE} WHERE external_ids ? 'wildapricot' AND plan <> ${PLAN_SQL_CASE} RETURNING id` },
+    { sql: `UPDATE app.memberships x SET plan_id = m.plan FROM app.members m WHERE m.org_id = x.org_id AND m.id = x.member_id AND x.how = 'imported' AND x.plan_id <> m.plan RETURNING x.id` }]);
+  if (moved[0].length || moved[1].length) console.log(`Plans: ${moved[0].length} members and ${moved[1].length} membership terms moved to their Wild Apricot level's plan.`);
   if (fix.some((r) => r.length)) console.log(`Repaired: ${fix[0].length} marked as never became members, ${fix[1].length} un-approved, ${fix[2].length} terms set aside.`);
   await db.run(A, [{ sql: 'SELECT app.refresh_status($1::uuid)', params: [org.id] },
     { sql: `INSERT INTO app.imports (org_id, preset, mapping, rows_total, rows_created, rows_skipped, problems, status, by) VALUES ($1::uuid, 'wildapricot', '{}'::jsonb, $2::int, $3::int, $4::int, $5::jsonb, 'done', 'Import script')`, params: [org.id, table.length - 1, todo.length, skipped.length + (list.length - todo.length), JSON.stringify(skipped.slice(0, 200))] }]);

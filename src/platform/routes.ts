@@ -387,7 +387,8 @@ export const ORG_PLATFORM_ROUTES: Route[] = [
       modules: P.effectiveModules(t, plans.data, flags.data.flags),
       announcements: ann.data.items.filter((a) => a.active && a.startsOn <= today && a.endsOn >= today && (a.audience === 'all' || (a.audience === 'plans' && a.ids.includes(t.planId)) || (a.audience === 'orgs' && a.ids.includes(t.slug)))).map(({ ids: _i, ...a }) => a),
       support: support ? { by: support.by, mode: support.mode, until: support.ends_at, reason: support.reason } : null,
-      siteUrl: process.env.PUBLIC_SITE_URL ?? `https://${t.customDomain?.status === 'verified' ? t.customDomain.host : `${t.slug}.${settings.data.baseDomain}`}`,
+      // the website: a verified own domain, else the founding organization's own address (legacy_web_host), else <slug>.<base domain>
+      siteUrl: process.env.PUBLIC_SITE_URL ?? `https://${t.customDomain?.status === 'verified' ? t.customDomain.host : (await one<{ h: string }>(ctx.db, PLATFORM, 'SELECT legacy_web_host::text AS h FROM platform.organizations WHERE slug = $1', [t.slug]))?.h || `${t.slug}.${settings.data.baseDomain}`}`,
       you: { name: ctx.me.name, support: ctx.me.id === 'platform-support', readOnly: !!ctx.readOnly } } };
   }),
   route('GET', /^\/auth\/invitations\/([A-Za-z0-9_-]{30,60})$/, async (ctx, mm) => {

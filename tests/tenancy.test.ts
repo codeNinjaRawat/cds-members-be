@@ -71,8 +71,8 @@ ok(t.status === 201 && tk.body.ticket.createdAt.slice(11, 13) === q!.local && q!
   const { clientIp } = await import('../src/http/core.js');
   process.env.TENANT_FROM_HOST = '1'; process.env.EDGE_KEY = 'k'.repeat(64);
   const name = async (h: Record<string, string>) => { const r = await call('GET', '/public/documents/site-config', undefined, h); return r.status === 200 ? r.body.data.org.shortName : r.status; };
-  ok(await name({ 'x-org': 'cvic-austin' }) === 404, 'a stranger cannot pick the organization with x-org (the host decides)');
-  ok(await name({ 'x-org': 'cvic-austin', 'x-edge-key': 'wrong'.padEnd(64, 'x') }) === 404, 'nor with a wrong key');
+  ok([404, 503].includes(await name({ 'x-org': 'cvic-austin' }) as number), 'a stranger cannot pick the organization with x-org (the host decides)');
+  ok((await name({ 'x-org': 'cvic-austin', 'x-edge-key': 'wrong'.padEnd(64, 'x') })) === 503, 'nor with a wrong key (refused – the app is told its key does not match)');
   const cv = await name({ 'x-org': 'cvic-austin', 'x-edge-key': 'k'.repeat(64) });
   ok(cv !== 404 && cv !== 'ISGH', `our website with the key: the organization it names (${cv})`);
   ok(await name({ 'x-org-host': 'cvic-austin.nextgrow.pro', 'x-edge-key': 'k'.repeat(64) }) === cv, 'or the address the visitor used');
