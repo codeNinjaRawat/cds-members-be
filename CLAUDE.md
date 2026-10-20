@@ -14,3 +14,6 @@ Golden rules: admin controls everything (no hard-coded business values – use s
 research note before any feature; black-box + white-box tests and a test report before delivery;
 start with `../memory/00-START-HERE.md`.
 Build order: Web UI → Admin UI (glass) → BE (SQL) → integration → mobile, in small approved modules (../memory/17-build-order-and-modules.md).
+
+## Member app
+The `/app/*` module serves the member app. Plan for the remaining routes (contact-change OTP, ID read fields, join drafts, delete-account, Google/Apple sign-in, push, `app-config` document): `../memory/25-member-app-integration-architecture.md`. Contract: `memory/api-contract-mobile.md`.
