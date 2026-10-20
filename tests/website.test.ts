@@ -54,6 +54,12 @@ const sub = await call('POST', '/public/membership/applications', { ...app(), jo
 ok(sub.status === 201 && /^APP-\d{4}-\d{5}$/.test(sub.body.applicationId) && sub.body.center === 'Southeast Islamic Center 1', `application ${sub.body.applicationId}, placed by ZIP (browser's centerId ignored)`);
 ok(sub.body.amountCents > 0 && sub.body.payment.status === 'check_pending', `check payment waits (${sub.body.payment.status}, $${sub.body.amountCents / 100})`);
 ok((await call('POST', '/public/membership/applications', { ...app(), joinToken: ev.body.joinToken })).status === 401, 'a join token works once');
+{ // a promised check is not a payment: the member record shows no dues until the office marks it received
+  const { MEMBER_SQL } = await import('../src/modules/member-shape.js');
+  const shaped = await one<{ payments: unknown[] }>(db, OWNER, `${MEMBER_SQL} WHERE m.id = $1`, [sub.body.memberId]);
+  const open = await one<{ n: number }>(db, OWNER, `SELECT count(*)::int AS n FROM app.payments WHERE member_id = $1 AND status = 'check_pending'`, [sub.body.memberId]);
+  ok((open?.n ?? 0) > 0 && Array.isArray(shaped?.payments) && shaped!.payments.length === 0, `check waiting: ${open?.n} open payment(s), 0 counted as paid on the member`);
+}
 const ev2 = await call('POST', '/public/join/email/verify', { email, code: (await call('POST', '/public/join/email/start', { email })).body.devCode });
 ok(ev2.status === 409 && ev2.body.error.includes('already waiting') && !JSON.stringify(ev2.body).match(/[A-Z]{3}-\d{5,}/), 'second application with the same email refused at the email step (no member number shown)');
 const mid = sub.body.memberId;
