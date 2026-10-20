@@ -34,10 +34,12 @@
     "server-dev:import-wa": "node --import tsx --import ./src/load-env.ts src/db/import-wildapricot.ts --env=server-dev",
     "server-dev:report": "node --import tsx --import ./src/load-env.ts src/db/report.ts --env=server-dev",
     "server-dev:admins": "node --import tsx --import ./src/load-env.ts src/db/admins.ts --env=server-dev",
+    "server-dev:admin-passwords": "node --import tsx --import ./src/load-env.ts src/auth/admin-passwords.ts --env=server-dev",
     "server-dev:test-sql": "node --import tsx --import ./src/load-env.ts src/db/sql-tests.ts --env=server-dev",
     "dev:server-db": "node --import tsx --import ./src/load-env.ts --watch src/http/server.ts --env=server-dev",
     "test:db-config": "tsx tests/db-config.test.ts",
-    "admin:password": "node --import tsx --import ./src/load-env.ts src/auth/set-password.ts"
+    "admin:password": "node --import tsx --import ./src/load-env.ts src/auth/set-password.ts",
+    "admin:passwords": "node --import tsx --import ./src/load-env.ts src/auth/admin-passwords.ts"
   },
   "dependencies": {
     "pg": "^8.13.0",

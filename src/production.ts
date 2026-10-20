@@ -4,6 +4,8 @@
  * missing secret). `npm run check:production -- --env=production` prints the same report for BE/.env.production
  * before a deploy (exit 1 = fix first). Values are never printed – only which setting is wrong.
  */
+import { existsSync } from 'node:fs';
+
 export type Report = { errors: string[]; warnings: string[] };
 
 const DEV_ONLY = ['AUTH_DEV_HEADER', 'AUTH_DEV_CODES', 'AUTH_DEV_FIXED_CODE', 'AUTH_DEV_NO_LIMITS', 'AUTH_GOOGLE_FAKE', 'LOCALHOST_ORG', 'DNS_FAKE'] as const;
@@ -57,6 +59,7 @@ export function productionReport(env: NodeJS.ProcessEnv = process.env): Report {
   if ((env.SMS_PROVIDER ?? 'log') === 'log') warnings.push('SMS_PROVIDER: log – no text message is sent.');
   if ((env.FILES_STORAGE ?? 'local') === 'local') warnings.push(`FILES_STORAGE: local – keep FILES_DIR (${env.FILES_DIR || './data/files'}) on a disk that survives updates and is backed up, or use s3.`);
   if (on('MEMBERS_CACHE_SECONDS')) warnings.push('MEMBERS_CACHE_SECONDS: only correct with ONE API process – remove it if you run more.');
+  if (existsSync(new URL('../admin-passwords.json', import.meta.url))) warnings.push('admin-passwords.json is on this server – development passwords in plain text; delete it once people set their own.');
   if (on('API_LOG')) warnings.push('API_LOG: every request is printed – fine while starting, noisy later.');
   return { errors, warnings };
 }

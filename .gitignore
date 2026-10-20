@@ -34,3 +34,6 @@ Thumbs.db
 # real member exports (personal data – never commit)
 imports/
 _env_server_dev.bak
+
+# development admin passwords (npm run admin:passwords) – never commit
+admin-passwords.json
