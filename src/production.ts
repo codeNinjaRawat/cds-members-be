@@ -74,6 +74,10 @@ export function printReport(r: Report, title = 'Production check'): void {
 export function assertProduction(what: string): void {
   if (process.env.NODE_ENV !== 'production') return;
   const r = productionReport();
+  // a development / staging database (name ends in _dev, _test or _staging): the same report, but it never stops the
+  // process – development switches are expected there. Real data (any other database name) is still protected.
+  const dbn = (() => { try { return decodeURIComponent(new URL(process.env.DATABASE_URL ?? '').pathname.slice(1)); } catch { return ''; } })();
+  if (r.errors.length && /_(dev|test|staging)$/i.test(dbn)) { printReport({ errors: [], warnings: [...r.errors, ...r.warnings] }, `${what} (development database ${dbn} – not blocked)`); return; }
   if (r.errors.length) { printReport(r, `${what} will not start`); process.exit(1); }
   if (r.warnings.length) printReport(r, `${what}`);
 }
