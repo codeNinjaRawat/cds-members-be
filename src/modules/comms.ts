@@ -10,6 +10,7 @@
  *   POST /admin/groups/:id/members {add?, remove?}   manual groups
  *   GET  /admin/groups/requests · POST /admin/groups/:id/requests/:memberId {decision: approve | decline}
  *   POST /admin/groups/refresh                  recompute automatic groups now (the nightly job does it too)
+ *   GET  /admin/members/:id/groups              every group with whether this member is in it (profile: tag a person)
  *   GET  /member/groups · POST /member/groups/:id/(join|leave|request) · POST /member/groups/:id/message (leaders)
  * Preferences
  *   GET/PUT /member/preferences {email, sms, optOut[]} · GET /public/unsubscribe/:token · POST /public/unsubscribe {token, topic?}
@@ -33,6 +34,7 @@ import { CommunicationSchema, mockCommunication, type CommunicationDoc, type Mac
 import { MembershipSettingsSchema, mockMembershipSettings } from '@/lib/content/membership';
 import { ageOn, eligibility, lastPayment, renewalOf, statusOf, type Member } from '@/lib/members/members';
 import { siteOf } from './join-drafts.js';
+import { storage } from '../files/storage.js';
 
 const API = (ctx: Ctx) => ({ org: ctx.orgId, role: 'app_api' as const });
 const body = (ctx: Ctx) => (ctx.req.body ?? {}) as Record<string, unknown>;
@@ -103,13 +105,24 @@ async function audienceOf(ctx: Ctx, c: C.Campaign) {
   const reach = all.filter((p) => visible(ctx, p));
   return { ...C.resolveAudience(c, reach, doc), outOfScope: all.length - reach.length };
 }
+/** The pictures of an email as "[image] <address>" lines (the worker shows them as pictures; plain-text readers get links).
+ *  The addresses are signed download links good for 180 days – long enough for an email to be opened later. */
+async function imageLinks(ctx: Ctx, c: C.Campaign): Promise<string> {
+  if (!c.images.length) return '';
+  const ids = c.images.map((i) => i.fileId).filter((x) => /^[0-9a-f-]{36}$/.test(x));
+  const files = ids.length ? (await rows(ctx.db, API(ctx), `SELECT id::text, name, storage_key FROM app.files WHERE id = ANY(ARRAY(SELECT jsonb_array_elements_text($1::jsonb))::uuid[]) AND area = 'comms' AND status = 'ready'`, [JSON.stringify(ids)])) as { id: string; name: string; storage_key: string }[] : [];
+  const lines: string[] = [];
+  for (const id of ids) { const f = files.find((x) => x.id === id); if (f) lines.push(`[image] ${(await storage().downloadUrl(f.storage_key, f.name, 180 * 86_400)).url}`); }
+  return lines.length ? `\n\n${lines.join('\n')}` : '';
+}
 /** Queue one message to its recipients: a delivery row per person (sent or skipped) and the outbox mail / text. */
 async function deliver(ctx: Ctx, msgId: string, c: C.Campaign, by: string) {
   const comm = await commDoc(ctx); const a = await audienceOf(ctx, c); const org = await orgValues(ctx); const site = await siteBase(ctx);
   const out: Statement[] = []; const deliveries: { member_id: string; address: string; status: string }[] = [];
+  const pictures = c.channel === 'email' ? await imageLinks(ctx, c) : '';
   for (const p of a.to as Person[]) {
     const addr = c.channel === 'email' ? p.email!.trim().toLowerCase() : p.phone!.replace(/\D/g, '').slice(-10);
-    const t = C.finalText(c, comm, await valuesFor(ctx, p, c.channel, org, site));
+    const t = C.finalText({ ...c, body: c.body + pictures }, comm, await valuesFor(ctx, p, c.channel, org, site));
     out.push({ sql: `INSERT INTO platform.outbox (org_id, channel, to_address, subject, body, kind, ref) VALUES ($1, $2, $3, $4, $5, 'bulk', $6)`, params: [ctx.orgId, c.channel, addr, t.subject, t.body, `msg:${msgId}`] });
     deliveries.push({ member_id: p.id, address: addr, status: 'queued' });
   }
@@ -119,12 +132,18 @@ async function deliver(ctx: Ctx, msgId: string, c: C.Campaign, by: string) {
   for (let i = 0; i < out.length; i += 200) await ctx.db.run(PLATFORM, out.slice(i, i + 200));
   return { sent: a.to.length, skipped: a.skipped };
 }
-const Draft = z.object({ name: z.string(), channel: z.enum(['email', 'sms']), topic: z.string(), subject: z.string().default(''), body: z.string(), audience: z.object({ everyone: z.boolean().default(false), groupIds: z.array(z.string()).default([]), excludeGroupIds: z.array(z.string()).default([]) }), sendAt: z.string().nullable().default(null) });
-function toCampaign(ctx: Ctx, raw: unknown, id: string): C.Campaign {
+const Draft = z.object({ name: z.string(), channel: z.enum(['email', 'sms']), topic: z.string(), subject: z.string().default(''), body: z.string(), audience: z.object({ everyone: z.boolean().default(false), groupIds: z.array(z.string()).default([]), excludeGroupIds: z.array(z.string()).default([]), memberIds: z.array(z.string()).default([]) }), images: z.array(z.object({ fileId: z.string(), name: z.string().default('') })).default([]), sendAt: z.string().nullable().default(null) });
+async function toCampaign(ctx: Ctx, raw: unknown, id: string): Promise<C.Campaign> {
   const d = Draft.safeParse(raw); if (!d.success) throw new HttpError(400, 'Check the message.', issues(d.error));
   const p = C.CampaignSchema.safeParse({ ...d.data, id, status: 'draft', createdBy: ctx.me?.name ?? '', updatedAt: new Date().toISOString() });
   if (!p.success) throw new HttpError(422, p.error.issues[0].message, issues(p.error));
   if (p.data.audience.everyone && scoped(ctx)) throw new HttpError(403, 'Masjid roles send to groups – “everyone” is for the organization.');
+  if (p.data.audience.memberIds.length) {   // people named by hand must exist and be inside the sender's scope
+    const ids = Array.from(new Set(p.data.audience.memberIds.map((x) => x.toUpperCase())));
+    const found = (await people(ctx, 'WHERE m.id = ANY(ARRAY(SELECT jsonb_array_elements_text($1::jsonb)))', [JSON.stringify(ids)])).filter((x) => visible(ctx, x)).map((x) => x.id);
+    const missing = ids.filter((x) => !found.includes(x)); if (missing.length) throw new HttpError(422, `Not members in your scope: ${missing.slice(0, 5).join(', ')}.`, [{ path: 'audience.memberIds', message: 'Remove the people who are not members.' }]);
+    p.data.audience.memberIds = ids;
+  }
   return p.data;
 }
 
@@ -178,6 +197,16 @@ export const COMMS_ROUTES: Route[] = [
     if (decision === 'approve') await ctx.db.run(API(ctx), [{ sql: `UPDATE app.group_members SET how = 'joined' WHERE group_id = $1 AND member_id = $2`, params: [g.id, id] }]);
     await audit(ctx, 'members', `Group request ${decision}d`, `${g.name}: ${id}`, g.id);
     return { status: 200, body: { id: g.id, member: id, decision } };
+  }),
+  route('GET', /^\/admin\/members\/([A-Za-z0-9-]+)\/groups$/, async (ctx, mm) => {
+    need(ctx, 'members.view');
+    const id = mm[1].toUpperCase();
+    const [doc, me] = await Promise.all([groupsDoc(ctx), people(ctx, 'WHERE m.id = $1', [id])]);
+    if (!me[0]) throw new HttpError(404, 'No such member.');
+    if (!visible(ctx, me[0])) throw new HttpError(403, 'This member is outside your masjid or zone.');
+    const groups = doc.groups.filter((g) => !g.archived).map((g) => ({ id: g.id, name: g.name, kind: g.kind, description: g.description, isIn: G.inGroup(g, me[0].facts),
+      byHand: g.kind === 'manual' ? g.memberIds.includes(id) : g.include.includes(id) ? 'always' : g.exclude.includes(id) ? 'never' : '' }));
+    return { status: 200, body: { member: id, enabled: doc.enabled, groups } };
   }),
   route('POST', /^\/admin\/groups\/refresh$/, async (ctx) => { need(ctx, 'groups.manage'); return { status: 200, body: await refreshAutomatic(ctx) }; }),
   route('GET', /^\/member\/groups$/, async (ctx) => {
@@ -279,14 +308,14 @@ export const COMMS_ROUTES: Route[] = [
   }),
   route('POST', /^\/admin\/messages$/, async (ctx) => {
     need(ctx, 'comms.send');
-    const id = crypto.randomUUID(); const c = toCampaign(ctx, body(ctx), `msg-${id.slice(0, 8)}`);
+    const id = crypto.randomUUID(); const c = await toCampaign(ctx, body(ctx), `msg-${id.slice(0, 8)}`);
     await ctx.db.run(API(ctx), [{ sql: `INSERT INTO app.messages (org_id, id, kind, channel, subject, body, audience, status, created_by, name, topic, spec) VALUES ($1::uuid, $2::uuid, 'bulk', $3, $4, $5, $6::jsonb, 'draft', $7, $8, $9, $10::jsonb)`,
       params: [ctx.orgId, id, c.channel, c.subject, c.body, JSON.stringify(c.audience), ctx.me!.name, c.name, c.topic, JSON.stringify(c)] }]);
     return { status: 201, body: { id, message: c } };
   }),
   route('PUT', /^\/admin\/messages\/([0-9a-f-]{36})$/, async (ctx, mm) => {
     need(ctx, 'comms.send'); const r = await loadMsg(ctx, mm[1]); if (r.status !== 'draft') throw new HttpError(409, 'Only a draft can change.');
-    const c = toCampaign(ctx, body(ctx), r.spec.id);
+    const c = await toCampaign(ctx, body(ctx), r.spec.id);
     await ctx.db.run(API(ctx), [{ sql: `UPDATE app.messages SET channel = $2, subject = $3, body = $4, audience = $5::jsonb, name = $6, topic = $7, spec = $8::jsonb WHERE id = $1::uuid`, params: [mm[1], c.channel, c.subject, c.body, JSON.stringify(c.audience), c.name, c.topic, JSON.stringify(c)] }]);
     return { status: 200, body: { id: mm[1], message: c } };
   }),

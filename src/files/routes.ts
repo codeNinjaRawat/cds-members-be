@@ -22,7 +22,7 @@ import { localGet, localPut, readToken, storage } from './storage.js';
 const API = (ctx: Ctx) => ({ org: ctx.orgId, role: 'app_api' as const });
 const issues = (e: z.ZodError) => e.issues.map((i) => ({ path: i.path.join('.'), message: i.message }));
 const MIME = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp', 'image/heic', 'text/csv', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'];
-type Area = 'id-check' | 'record' | 'minutes' | 'event' | 'brand' | 'website' | 'zakat' | 'finance' | 'ticket' | 'other';
+type Area = 'id-check' | 'record' | 'minutes' | 'event' | 'brand' | 'website' | 'zakat' | 'finance' | 'ticket' | 'other' | 'comms';
 /** Who may upload (and see) each area. A file's area never changes. */
 const AREA: Record<Area, { perms: Permission[]; maxMb: number; mime?: string[]; retentionDays?: number; sensitive?: boolean }> = {
   'id-check': { perms: ['members.edit', 'members.approve'], maxMb: 10, mime: ['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'application/pdf'], retentionDays: 30, sensitive: true },
@@ -30,6 +30,7 @@ const AREA: Record<Area, { perms: Permission[]; maxMb: number; mime?: string[]; 
   event: { perms: ['events.manage'], maxMb: 10, mime: ['image/png', 'image/jpeg', 'image/webp'] }, brand: { perms: ['content.publish'], maxMb: 5, mime: ['image/png', 'image/jpeg', 'image/webp'] },
   website: { perms: ['content.publish'], maxMb: 20 }, zakat: { perms: ['zakat.intake', 'zakat.verify'], maxMb: 20, sensitive: true }, finance: { perms: ['finance.manage', 'payments.record'], maxMb: 20, sensitive: true },
   ticket: { perms: ['members.view'], maxMb: 20 }, other: { perms: ['members.view'], maxMb: 20 },
+  comms: { perms: ['comms.send'], maxMb: 10, mime: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] },   // pictures in bulk emails
 };
 const has = (ctx: Ctx, ps: Permission[]) => !!ctx.me && ps.some((p) => can(ctx.access, ctx.me, p, todayCT()));
 const New = z.object({ area: z.enum(Object.keys(AREA) as [Area, ...Area[]]), name: z.string().trim().min(1).max(160), mime: z.string(), bytes: z.number().int().min(1), visibility: z.enum(['private', 'members', 'public']).default('private'), ref: z.string().max(80).default(''), memberId: z.string().max(20).default('') });
@@ -123,7 +124,9 @@ export async function handleRaw(_db: Db, req: Req): Promise<Res> {
     await localPut(t.k, data); return { status: 200, body: { stored: data.length, sha256: createHash('sha256').update(data).digest('hex') } };
   }
   if (req.method === 'GET' && t.m === 'GET') {
-    try { return { status: 200, body: await localGet(t.k), headers: { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename="${(t.n || 'file').replace(/[^\w.-]+/g, '_')}"` } }; }
+    // pictures open in the page (emails show them); everything else downloads
+    const img = /\.(png|jpe?g|webp|gif)$/i.exec(t.n || ''); const mime = img ? `image/${img[1].toLowerCase().replace('jpg', 'jpeg')}` : 'application/octet-stream';
+    try { return { status: 200, body: await localGet(t.k), headers: { 'content-type': mime, 'content-disposition': `${img ? 'inline' : 'attachment'}; filename="${(t.n || 'file').replace(/[^\w.-]+/g, '_')}"`, ...(img ? { 'cache-control': 'public, max-age=86400' } : {}) } }; }
     catch { throw new HttpError(404, 'No such file.'); }
   }
   throw new HttpError(405, 'Not allowed.');

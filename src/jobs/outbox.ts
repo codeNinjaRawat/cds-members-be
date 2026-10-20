@@ -13,7 +13,8 @@ import { CommunicationSchema, mockCommunication } from '@/lib/community/communic
 const MAX_TRIES = 5;
 type Row = { id: string; org_id: string | null; channel: 'email' | 'sms'; to_address: string; subject: string; body: string; kind: string; ref: string; attempts: number };
 const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-const html = (text: string) => esc(text).split(/\n{2,}/).map((p) => `<p>${p.replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>')}</p>`).join('');
+const html = (text: string) => esc(text).split(/\n{2,}/).map((p) => `<p>${p.replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>')}</p>`).join('')
+  .replace(/\[image\] <a href="([^"]+)">[^<]*<\/a>/g, '<img src="$1" alt="" style="max-width:100%;height:auto;display:block;margin:12px 0">');   // pictures of a bulk email (comms)
 
 export async function drainOutbox(db: Db, opts: { limit?: number; email?: EmailProvider; sms?: SmsProvider } = {}) {
   const email = opts.email ?? emailProvider(); const sms = opts.sms ?? smsProvider();

@@ -9,7 +9,7 @@ const { openDb, one } = await import('../src/db/sql.js');
 let pass = 0, fail = 0; const ok = (c: boolean, m: string, extra?: unknown) => { c ? pass++ : (fail++, console.log('FAIL', m, extra === undefined ? '' : JSON.stringify(extra).slice(0, 600))); };
 const db = openDb(); const OWNER = { org: null, role: 'owner' as const };
 const server = createApi(db); await new Promise<void>((r) => server.listen(0, r));
-const base = `http://localhost:${(server.address() as { port: number }).port}`;
+const base = `http://localhost:${(server.address() as { port: number }).port}`; process.env.PUBLIC_API_URL = base; process.env.FILES_DIR = `/tmp/files-comms-${process.pid}`;
 const call = async (method: string, path: string, body?: unknown, who: string | { cookie: string } = 'owner') => {
   const h: Record<string, string> = { 'content-type': 'application/json' };
   if (typeof who === 'string') { if (who) h['x-admin'] = who; } else h.cookie = who.cookie;
@@ -118,6 +118,30 @@ ok((await call('POST', `/admin/messages/${d4.body.id}/preview`, {}, 'comms')).bo
 ok((await call('POST', '/member/groups/volunteers/message', { subject: 'Hi', body: 'Hello' }, a.jar)).status === 403, 'only leaders may email a group (and only when allowed)');
 const list = await call('GET', '/admin/messages', undefined, 'comms');
 ok(list.status === 200 && list.body.messages.length >= 6, 'message list');
+
+/* a member's groups (profile), a message to named people with a picture */
+{
+  const anyone = await one<{ id: string }>(db, OWNER, `SELECT id FROM app.members WHERE status = 'active' AND archived IS NULL AND email <> '' ORDER BY id LIMIT 1`);
+  const mg = await call('GET', `/admin/members/${anyone!.id}/groups`);
+  ok(mg.status === 200 && Array.isArray(mg.body.groups) && mg.body.groups.length > 0 && mg.body.groups.every((g: any) => typeof g.isIn === 'boolean' && ['manual', 'automatic'].includes(g.kind)), 'a member’s groups with in / out', mg.body);
+  ok((await call('GET', '/admin/members/HOU-000000/groups')).status === 404, '… unknown member');
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
+  const nf = await call('POST', '/admin/files', { area: 'comms', name: 'flyer.png', mime: 'image/png', bytes: png.length }, 'comms');
+  ok(nf.status === 201 && nf.body.upload?.url, 'a picture for a message can be uploaded with comms.send', nf.body);
+  await fetch(nf.body.upload.url, { method: 'PUT', headers: nf.body.upload.headers, body: png });
+  const done = await call('POST', `/admin/files/${nf.body.id}/complete`, {}, 'comms');
+  ok(done.status === 200, 'picture stored', done.body);
+  const d = await call('POST', '/admin/messages', { name: 'One person', channel: 'email', topic: 'announcement', subject: 'For you', body: 'Hello {Member.FirstName}', audience: { everyone: false, groupIds: [], memberIds: [anyone!.id] }, images: [{ fileId: nf.body.id, name: 'flyer.png' }] }, 'comms');
+  ok(d.status === 201, 'a message to a named member with a picture', d.body);
+  const pv = await call('POST', `/admin/messages/${d.body.id}/preview`, {}, 'comms');
+  ok(pv.status === 200 && pv.body.recipients === 1, 'preview: exactly that person', pv.body);
+  const s = await call('POST', `/admin/messages/${d.body.id}/send`, {}, 'comms');
+  ok(s.status === 200 && s.body.sent === 1, 'sent to one', s.body);
+  const ob = await one<{ body: string }>(db, OWNER, `SELECT body FROM platform.outbox WHERE ref = $1 ORDER BY id DESC LIMIT 1`, [`msg:${d.body.id}`]);
+  ok(!!ob && /\[image\] http/.test(ob.body) && /files\/raw\//.test(ob.body), 'the email carries the picture link', ob?.body.slice(-200));
+  ok((await call('POST', '/admin/messages', { name: 'T', channel: 'sms', topic: 'announcement', body: 'Hi', audience: { everyone: true }, images: [{ fileId: nf.body.id }] }, 'comms')).status === 422, 'no pictures by text');
+}
+console.log(`comms ${pass}/${pass + fail}`);
 
 server.close(); await db.close();
 console.log(`comms ${pass}/${pass + fail}`); process.exit(fail ? 1 : 0);
