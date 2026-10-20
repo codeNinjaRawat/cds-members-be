@@ -69,6 +69,12 @@ export const WEBSITE_ROUTES: Route[] = [
     if (!c) throw new HttpError(400, 'That code has expired. Ask for a new one.');
     if (c.attempts >= 5) throw new HttpError(429, 'Too many tries. Ask for a new code.');
     if (!c.ok) { await ctx.db.run(PLATFORM, [{ sql: 'UPDATE platform.login_codes SET attempts = attempts + 1 WHERE id = $1::uuid', params: [c.id] }]); throw new HttpError(400, 'That code is not right.'); }
+    // the email is proven now: tell its owner straight away when it already has an application or a membership (the
+    // application would be refused at the end otherwise)
+    const existing = await one<{ status: string; stage: string }>(ctx.db, API(ctx), `SELECT status, coalesce(record->>'joinStage', '') AS stage FROM app.members WHERE lower(email) = $1 ORDER BY (archived IS NULL) DESC LIMIT 1`, [email]);
+    if (existing && existing.status !== 'archived') throw new HttpError(409, existing.status !== 'pending' ? 'You are already a member – sign in to renew.'
+      : existing.stage === 'incomplete' ? 'We already have an unfinished application for this email. Contact the office and we will finish it with you.'
+      : 'An application with this email is already waiting for approval – we will email you when it is reviewed.', undefined, existing.status === 'pending' ? 'already-applied' : 'already-member');
     const token = newToken();
     await ctx.db.run(PLATFORM, [{ sql: 'UPDATE platform.login_codes SET used_at = now() WHERE id = $1::uuid', params: [c.id] },
       { sql: `INSERT INTO platform.login_codes (org_id, channel, address, purpose, code_hash, expires_at) VALUES ($1, 'email', $2, 'verify-email', decode($3, 'hex'), now() + interval '2 hours')`, params: [ctx.orgId, email, sha256hex(token)] }]);
@@ -97,7 +103,7 @@ export const WEBSITE_ROUTES: Route[] = [
     const total = checkoutTotal(config, { label: `${plan.name} membership`, kind: 'dues', priceCents: price.totalCents, planId: plan.id, method: method as PayMethod, coverFees: co.coverFees === true, code: co.discountCode, today });
     if (!total.codeOk) throw new HttpError(422, total.codeMessage ?? 'That code does not work.', { 'payment.code': total.codeMessage });
     const existing = await one<{ id: string; status: string }>(ctx.db, API(ctx), `SELECT id, status FROM app.members WHERE lower(email) = $1 ORDER BY (archived IS NULL) DESC LIMIT 1`, [email]);
-    if (existing && existing.status !== 'archived') throw new HttpError(409, existing.status === 'pending' ? 'An application with this email is already waiting for approval.' : 'You are already a member – sign in to renew.', { memberId: existing.id });
+    if (existing && existing.status !== 'archived') { const msg = existing.status === 'pending' ? 'An application with this email is already waiting for approval – we will email you when it is reviewed.' : 'You are already a member – sign in to renew.'; throw new HttpError(409, msg, { 'account.email': msg }); }   // the detail is field messages – never the member number
 
     const appId = (await one<{ id: string }>(ctx.db, API(ctx), `SELECT 'APP-' || $2::text || '-' || lpad(app.next_no($1::uuid, 'application-' || $2::text, 4001)::text, 5, '0') AS id`, [ctx.orgId, settings.year]))!.id;
     const memberId = (await one<{ id: string }>(ctx.db, API(ctx), `SELECT app.next_member_id($1::uuid, $2) AS id`, [ctx.orgId, ctx.slug.slice(0, 3).toUpperCase()]))!.id;

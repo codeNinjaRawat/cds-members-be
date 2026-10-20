@@ -55,8 +55,7 @@ ok(sub.status === 201 && /^APP-\d{4}-\d{5}$/.test(sub.body.applicationId) && sub
 ok(sub.body.amountCents > 0 && sub.body.payment.status === 'check_pending', `check payment waits (${sub.body.payment.status}, $${sub.body.amountCents / 100})`);
 ok((await call('POST', '/public/membership/applications', { ...app(), joinToken: ev.body.joinToken })).status === 401, 'a join token works once');
 const ev2 = await call('POST', '/public/join/email/verify', { email, code: (await call('POST', '/public/join/email/start', { email })).body.devCode });
-const twice = await call('POST', '/public/membership/applications', { ...app(), joinToken: ev2.body.joinToken });
-ok(twice.status === 409 && twice.body.error.includes('already waiting'), 'second application with the same email refused');
+ok(ev2.status === 409 && ev2.body.error.includes('already waiting') && !JSON.stringify(ev2.body).match(/[A-Z]{3}-\d{5,}/), 'second application with the same email refused at the email step (no member number shown)');
 const mid = sub.body.memberId;
 const row = await one<{ status: string; approved_on: string | null }>(db, OWNER, 'SELECT status, approved_on FROM app.members WHERE id = $1', [mid]);
 ok(row!.status === 'pending' && row!.approved_on === null, 'the applicant is pending');
