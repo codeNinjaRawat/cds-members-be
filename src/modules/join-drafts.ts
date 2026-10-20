@@ -21,13 +21,16 @@ export const RESUME_DAYS = 30;
 const API = (ctx: Ctx) => ({ org: ctx.orgId, role: 'app_api' as const });
 const MAX_DRAFT = 60_000;   // characters of JSON – a whole join form is far smaller; pictures are never kept here
 
-/** The organization's website address for links in emails: the address the visitor used, else the default one. */
-export function siteOf(ctx: Ctx): string {
+/** The organization's website address for links in emails: the address the visitor is on (website calls), else the
+ *  organization's own website (founding organization's address, else <slug>.<base domain>) – never the admin's address. */
+export async function siteOf(ctx: Ctx): Promise<string> {
+  if (process.env.PUBLIC_SITE_URL) return process.env.PUBLIC_SITE_URL.replace(/\/$/, '');
   const h = String(ctx.req.headers['x-org-host'] ?? '').trim().toLowerCase();
-  if (h && /^[a-z0-9.-]+(:\d+)?$/.test(h)) return `${/^(localhost|127\.|[a-z0-9-]+\.localhost)/.test(h) ? 'http' : 'https'}://${h}`;
-  return process.env.PUBLIC_SITE_URL ?? `https://${ctx.slug}.${process.env.BASE_DOMAIN ?? 'nextgrow.pro'}`;
+  if (ctx.req.path.startsWith('/public/') && h && /^[a-z0-9.-]+(:\d+)?$/.test(h)) return `${/^(localhost|127\.|[a-z0-9-]+\.localhost)/.test(h) ? 'http' : 'https'}://${h}`;
+  const r = await one<{ h: string | null }>(ctx.db, PLATFORM, 'SELECT legacy_web_host::text AS h FROM platform.organizations WHERE id = $1::uuid', [ctx.orgId]);
+  return `https://${r?.h || `${ctx.slug}.${process.env.BASE_DOMAIN ?? 'nextgrow.pro'}`}`;
 }
-export const resumeLink = (ctx: Ctx, token: string) => `${siteOf(ctx)}/membership/join?resume=${encodeURIComponent(token)}`;
+export const resumeLink = async (ctx: Ctx, token: string) => `${await siteOf(ctx)}/membership/join?resume=${encodeURIComponent(token)}`;
 
 export async function newResumeToken(db: Db, orgId: string, email: string): Promise<string> {
   const t = newToken();
@@ -118,7 +121,7 @@ export async function saveDraft(ctx: Ctx, memberId: string, stepIn: unknown, dat
 async function orgName(ctx: Ctx) { return (await one<{ name: string }>(ctx.db, PLATFORM, 'SELECT name FROM platform.organizations WHERE id = $1::uuid', [ctx.orgId]))?.name ?? 'the organization'; }
 export async function emailLink(ctx: Ctx, email: string, firstName: string, token: string, kind: 'join-link' | 'join-reminder') {
   const name = await orgName(ctx);
-  const link = resumeLink(ctx, token);
+  const link = await resumeLink(ctx, token);
   await ctx.db.run(PLATFORM, [{ sql: `INSERT INTO platform.outbox (org_id, channel, to_address, subject, body, kind) VALUES ($1, 'email', $2, $3, $4, $5)`,
     params: [ctx.orgId, email, kind === 'join-link' ? `Finish your ${name} membership application` : `Your ${name} membership application is waiting`,
       `Assalamu alaikum${firstName ? ` ${firstName}` : ''},\n\n${kind === 'join-link' ? 'Your answers are saved.' : 'You started a membership application and your answers are saved.'} Open this link to pick up where you stopped:\n\n${link}\n\nThe link works for ${RESUME_DAYS} days. If you did not start an application, you can ignore this email.`, kind] }]);

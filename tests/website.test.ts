@@ -89,7 +89,7 @@ ok(ev2.status === 200 && ev2.body.alreadyApplied?.applicationId === sub.body.app
   ok((await call('POST', `/admin/members/${rec!.id}/approve`, { ref: 'x' }, 'owner')).status === 409, 'an unfinished application cannot be approved');
   const rem = await call('POST', `/admin/members/${rec!.id}/join-reminder`, {}, 'owner');
   const rr = await one<any>(db, OWNER, `SELECT record->'join'->>'reminders' AS n, record->'audit'->-1->>'action' AS last FROM app.members WHERE id = $1`, [rec!.id]);
-  ok(rem.status === 200 && /resume=/.test(rem.body.link) && rr.n === '1' && rr.last === 'Reminder sent', 'office reminder: link emailed, counted, in the audit log');
+  ok(rem.status === 200 && /^https?:\/\/[^/]+\/membership\/join\?resume=/.test(rem.body.link) && !/admin/.test(rem.body.link) && rr.n === '1' && rr.last === 'Reminder sent', 'office reminder: link emailed, counted, in the audit log');
   // coming back with the email: same record, answers back
   const code2 = (await call('POST', '/public/join/email/start', { email: half })).body.devCode;
   const v2 = await call('POST', '/public/join/email/verify', { email: half, code: code2 });
