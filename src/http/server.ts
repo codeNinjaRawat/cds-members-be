@@ -106,16 +106,16 @@ async function route(db: Db, req: Req): Promise<Res> {
   }
   // members
   if (path === '/admin/members' && method === 'GET') { const list = await listMembers(ctx, req.query); return { status: 200, body: { count: list.length, members: req.query.get('limit') === 'all' ? list : list.slice(0, Math.min(20_000, Number(req.query.get('limit') ?? 200) || 200)) } }; }   // ?limit=all: the admin's whole scope (its screens filter in the browser)
-  if ((m = path.match(/^\/admin\/members\/([A-Za-z0-9-]+)$/)) && method === 'GET') { const mem = await getMember(ctx, m[1]); return { status: 200, body: { member: mem, status: statusOf(mem), eligibility: eligibility(mem) } }; }
+  if ((m = path.match(/^\/admin\/members\/([A-Za-z0-9-]+)$/)) && method === 'GET') { const mem = await getMember(ctx, m[1]); const sp = MembershipSettingsSchema.safeParse(await document(db, ctx.orgId, 'membership-settings')); const ms = sp.success ? sp.data : mockMembershipSettings; return { status: 200, body: { member: mem, status: statusOf(mem), eligibility: eligibility(mem, YEAR, ms.plans, ms.rules) } }; }
   if ((m = path.match(/^\/admin\/members\/([A-Za-z0-9-]+)\/approve$/)) && method === 'POST') {
     const mem = await getMember(ctx, m[1]); need(ctx, 'members.approve');
     const settings = MembershipSettingsSchema.safeParse(await document(db, ctx.orgId, 'membership-settings'));
-    const rules = (settings.success ? settings.data : mockMembershipSettings).rules;
-    const blockers = approvalBlockers(mem, rules, YEAR);
+    const ms = settings.success ? settings.data : mockMembershipSettings;
+    const blockers = approvalBlockers(mem, ms.rules, ms.year, ms.plans);   // the organization's plans and the year being sold
     if (blockers.length) throw new HttpError(409, 'The approval rule asks for this first.', blockers);
     if (mem.approvedOn) throw new HttpError(409, 'Already approved.');
     const ref = String((req.body as { ref?: string })?.ref ?? '').slice(0, 120);
-    await db.run({ org: ctx.orgId, role: 'app_api' }, [{ sql: `UPDATE app.members SET approved_on = $2::date, record = jsonb_set(record, '{audit}', coalesce(record->'audit', '[]'::jsonb) || $3::jsonb) WHERE id = $1`, params: [mem.id, today, [{ at: new Date().toISOString(), by: ctx.me!.name, action: 'Approved', detail: ref || `${rules.approval.by || 'Board'} approval` }]] }]);
+    await db.run({ org: ctx.orgId, role: 'app_api' }, [{ sql: `UPDATE app.members SET approved_on = $2::date, record = jsonb_set(record, '{audit}', coalesce(record->'audit', '[]'::jsonb) || $3::jsonb) WHERE id = $1`, params: [mem.id, today, [{ at: new Date().toISOString(), by: ctx.me!.name, action: 'Approved', detail: ref || `${ms.rules.approval.by || 'Board'} approval` }]] }]);
     await db.run({ org: ctx.orgId, role: 'app_api' }, [{ sql: 'SELECT app.refresh_status($1::uuid, $2)', params: [ctx.orgId, mem.id] }, { sql: `UPDATE app.applications SET status = 'approved', decided_at = now(), decided_by = $2 WHERE member_id = $1 AND status NOT IN ('approved', 'rejected', 'withdrawn')`, params: [mem.id, ctx.me!.name] }]);
     await audit(ctx, 'members', 'Approved', ref, mem.id);
     return { status: 200, body: { id: mem.id, approvedOn: today } };
