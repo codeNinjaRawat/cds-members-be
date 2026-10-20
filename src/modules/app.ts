@@ -150,6 +150,13 @@ async function viewer(ctx: Ctx): Promise<E.Viewer> {
   const g = (await rows(ctx.db, API(ctx), `SELECT group_id FROM app.group_members WHERE member_id = $1 AND status = 'in'`, [ctx.memberId])) as { group_id: string }[];
   return { signedIn: true, planId: m?.plan, groupIds: g.map((x) => x.group_id) };
 }
+/** The visitor behind a request without a token: `contactId` in the body → app.contacts (see contacts.ts). */
+async function visitorOf(ctx: Ctx): Promise<{ first_name: string; last_name: string; email: string; phone: string | null }> {
+  const id = String(body(ctx).contactId ?? '');
+  const c = /^[0-9a-f-]{36}$/.test(id) ? await one<{ first_name: string; last_name: string; email: string; phone: string }>(ctx.db, API(ctx), 'SELECT first_name, last_name, email::text, phone FROM app.contacts WHERE id = $1::uuid', [id]) : null;
+  if (!c) throw new HttpError(401, 'Tell us who you are first (My masjid), or sign in.', undefined, 'sign-in');
+  return c;
+}
 function eventItem(e: E.EventItem, v: E.Viewer, regs: Reg[], now: string) {
   const mine = regs.find((r) => r.eventId === e.id && ['confirmed', 'pending-payment', 'waitlist'].includes(r.status)) ?? regs.find((r) => r.eventId === e.id);
   const st = E.registrationState(e, now); const types = e.registration.types.filter((t) => t.enabled && t.availability !== 'code' && E.typeAvailable(t, v, undefined, e).ok);
@@ -164,8 +171,13 @@ function eventItem(e: E.EventItem, v: E.Viewer, regs: Reg[], now: string) {
     checkoutUrl: null as string | null,
   };
 }
+/** Events for a member (their registrations, member-only types) or for a visitor (public events, no registrations). */
 async function eventsFor(ctx: Ctx) {
-  needMember(ctx);
+  if (!ctx.memberId) {
+    const list = await inner<{ events: E.EventItem[] }>(ctx, 'GET', '/public/events');
+    const v: E.Viewer = { signedIn: false, groupIds: [] };
+    return { events: list.events.filter((e) => E.canSee(e, v)), regs: [] as Reg[], v, now: nowLocal() };
+  }
   const [list, regs, v] = await Promise.all([inner<{ events: E.EventItem[] }>(ctx, 'GET', '/public/events'), inner<{ registrations: Reg[] }>(ctx, 'GET', '/member/events/registrations'), viewer(ctx)]);
   return { events: list.events, regs: regs.registrations, v, now: nowLocal() };
 }
@@ -515,15 +527,19 @@ export const APP_ROUTES: Route[] = [
   route('GET', /^\/app\/events$/, async (ctx) => { const x = await eventsFor(ctx); return ok(x.events.filter((e) => e.status !== 'cancelled' || x.regs.some((r) => r.eventId === e.id)).map((e) => eventItem(e, x.v, x.regs, x.now))); }),
   route('GET', /^\/app\/events\/([a-z0-9-]{2,80})$/, async (ctx, mm) => ok((await oneEvent(ctx, mm[1])).item)),
   route('POST', /^\/app\/events\/([a-z0-9-]{2,80})\/register$/, once(async (ctx, mm) => {
-    const x = await oneEvent(ctx, mm[1]); const seats = Math.max(1, Math.min(21, Number(body(ctx).seats ?? 1) || 1)); const me = await row(ctx);
-    if (!me.email) throw new HttpError(409, 'Your record has no email address – ask the office to add one, then register.');
+    const x = await oneEvent(ctx, mm[1]); const seats = Math.max(1, Math.min(21, Number(body(ctx).seats ?? 1) || 1));
+    // a visitor registers with the contact they left on "My masjid" (app.contacts); a member with their record
+    const who = ctx.memberId ? await row(ctx) : await visitorOf(ctx);
+    if (!who.email) throw new HttpError(409, 'Your record has no email address – ask the office to add one, then register.');
     const types = x.e.registration.types.filter((t) => t.enabled && t.availability !== 'code' && E.typeAvailable(t, x.v, undefined, x.e, seats).ok).sort((a, b) => a.priceCents - b.priceCents);
     if (!types.length) throw new HttpError(409, x.item.reason ?? 'Registration is not open to you.');
-    const r = await inner<{ status: string; ref: string; totalCents: number; manageToken: string }>(ctx, 'POST', `/public/events/${x.e.id}/registrations`, { typeId: types[0].id, guestNames: Array.from({ length: seats - 1 }, (_, i) => `Guest ${i + 1}`), name: `${me.first_name} ${me.last_name}`, email: me.email, phone: me.phone ?? '' });
+    const r = await inner<{ status: string; ref: string; totalCents: number; manageToken: string }>(ctx, 'POST', `/public/events/${x.e.id}/registrations`, { typeId: types[0].id, guestNames: Array.from({ length: seats - 1 }, (_, i) => `Guest ${i + 1}`), name: `${who.first_name} ${who.last_name}`, email: who.email, phone: who.phone ?? '' });
     const co = r.status === 'pending-payment' && r.totalCents > 0 ? await inner<{ url: string }>(ctx, 'POST', '/public/checkout', { kind: 'event', ref: r.ref, token: r.manageToken }) : null;
-    await notifyMember(ctx, ctx.memberId!, { kind: 'events', title: r.status === 'waitlisted' ? `Waitlist: ${x.e.title}` : `Registered: ${x.e.title}`, body: `Reference ${r.ref}.`, link: `/events/${x.e.id}` });
+    if (ctx.memberId) await notifyMember(ctx, ctx.memberId, { kind: 'events', title: r.status === 'waitlisted' ? `Waitlist: ${x.e.title}` : `Registered: ${x.e.title}`, body: `Reference ${r.ref}.`, link: `/events/${x.e.id}` });
     const after = await oneEvent(ctx, mm[1]);
-    return ok({ ...after.item, checkoutUrl: co?.url ?? null }, 201);
+    // a visitor's registration is not on a member record: answer the state from what was just created
+    const item = ctx.memberId ? after.item : { ...after.item, registration: { ...after.item.registration, status: r.status === 'waitlisted' ? 'waitlisted' as const : 'registered' as const, seats, ticket: r.ref, qr: r.ref } };
+    return ok({ ...item, checkoutUrl: co?.url ?? null }, 201);
   })),
   route('POST', /^\/app\/events\/([a-z0-9-]{2,80})\/cancel$/, once(async (ctx, mm) => {
     const x = await oneEvent(ctx, mm[1]); const r = x.regs.find((y) => y.eventId === x.e.id && ['confirmed', 'pending-payment', 'waitlist'].includes(y.status));

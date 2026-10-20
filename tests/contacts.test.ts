@@ -41,6 +41,15 @@ ok(note.status === 200 && note.body.note === 'Called back', 'the office keeps a 
 const m = await one<{ email: string; id: string }>(db, OWNER, `SELECT email::text, id FROM app.members WHERE org_id = (SELECT id FROM platform.organizations WHERE slug = 'isgh') AND email <> '' AND archived IS NULL AND status = 'active' ORDER BY random() LIMIT 1`);
 const c3 = await call('POST', '/app/contacts', { firstName: 'Some', lastName: 'Member', email: m!.email, phone: '7135550199' });
 ok(c3.status === 201 && c3.body.memberId === m!.id, 'a contact whose email is a member\'s shows the member', c3.body);
+/* visitors see public events; registering needs a contact */
+const ev = await call('GET', '/app/events');
+ok(ev.status === 200 && Array.isArray(ev.body), 'a visitor sees the public events', ev.body);
+const open = (ev.body as any[]).find((e) => e.registration?.status === 'none' && e.canRegister);
+if (open) {
+  ok((await call('POST', `/app/events/${open.id}/register`, { seats: 1 })).status === 401, 'registering without a contact asks for one');
+  const reg = await call('POST', `/app/events/${open.id}/register`, { seats: 1, contactId: c1.body.contactId });
+  ok(reg.status === 201 && ['registered', 'waitlisted'].includes(reg.body.registration?.status) && reg.body.registration.ticket, 'a visitor registers with their contact', reg.body);
+}
 ok((await admin('DELETE', `/admin/contacts/${c3.body.contactId}`)).body?.ok === true && (await admin('DELETE', `/admin/contacts/${c1.body.contactId}`)).body?.ok === true, 'the office can remove a contact');
 ok((await call('GET', `/app/contacts/${c1.body.contactId}`)).status === 404, 'and it is gone');
 
