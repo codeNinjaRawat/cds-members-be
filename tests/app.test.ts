@@ -56,7 +56,7 @@ const r2 = await anon('POST', '/app/auth/token/refresh', { refreshToken: refresh
 ok(r2.status === 401, 'the old refresh token used again is refused');
 ok((await call('GET', '/app/me', undefined, { authorization: `Bearer ${r1.body.accessToken}` })).status === 401, '… and the whole chain is signed out');
 ok((await anon('POST', '/app/auth/token/refresh', { refreshToken: r1.body.refreshToken })).status === 401, '… including its newest refresh token');
-ok((await anon('POST', '/app/auth/token/refresh', { refreshToken: 'x'.repeat(43) }, { 'x-org': 'cvic-austin' })).status === 401, 'a made-up token is refused');
+ok((await anon('POST', '/app/auth/token/refresh', { refreshToken: 'x'.repeat(43) }, { 'x-org': 'isgh' })).status === 401, 'a made-up token is refused');
 
 /* sign in again for the screens */
 await db.run(OWNER, [{ sql: 'DELETE FROM platform.login_codes WHERE address = $1', params: [m!.email] }]);
