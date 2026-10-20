@@ -72,13 +72,27 @@ function starterOf(key: string, initial: any, o: Org): unknown {
   }
 }
 
+/** Removes every list entry that is a marked sample (any text in it contains "(demo)"). */
+function dropDemo(v: unknown): unknown {
+  if (Array.isArray(v)) return v.filter((x) => !(x && typeof x === 'object' && JSON.stringify(x).includes('(demo)'))).map(dropDemo);
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, dropDemo(x)]));
+  return v;
+}
+
 /** The document an organization sees before it publishes one. */
 export async function starterFor(db: Db, orgId: string, key: string): Promise<unknown> {
   const { REGISTRY } = await import('../registry.js');
   const entry = (REGISTRY as Record<string, { initial: unknown; schema: { safeParse: (x: unknown) => { success: boolean; data?: unknown; error?: { issues: { path: (string | number)[]; message: string }[] } } } }>)[key];
   if (!entry) return null;
   const o = await orgOf(db, orgId);
-  if (!o || o.founding) return entry.initial;
+  if (!o || (o.founding && key === 'admin-access')) return entry.initial;
+  if (o.founding && key !== 'admin-access') {
+    // the founding organization keeps its own built-in content, minus the sample entries marked "(demo)"
+    // (made-up events, partners, people…) – a live site must never show invented records
+    const clean = dropDemo(structuredClone(entry.initial));
+    const p = entry.schema.safeParse(clean);
+    return p.success ? p.data : entry.initial;
+  }
   const s = starterOf(key, entry.initial, o);
   const p = entry.schema.safeParse(s);
   if (!p.success) throw new Error(`Starter “${key}” for ${o.slug} does not fit its schema: ${p.error!.issues[0]?.path.join('.')} ${p.error!.issues[0]?.message}`);
