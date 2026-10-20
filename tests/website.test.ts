@@ -80,6 +80,13 @@ ok(ev2.status === 200 && ev2.body.alreadyApplied?.applicationId === sub.body.app
   const back = await one<any>(db, OWNER, `SELECT last_name, record->'join'->>'furthest' AS furthest FROM app.members WHERE id = $1`, [rec!.id]);
   ok(sv2.status === 200 && back.last_name === 'Saleh' && back.furthest === 'Plan', 'clearing a field never wipes what they gave; furthest step kept');
   ok((await call('PUT', '/public/join/draft', { resumeToken: 'x'.repeat(40), step: 'plan', data: {} })).status === 401, 'unknown link refused');
+  // J1: yes/no only – same person (name + birth date) / phone on another member's record
+  const someone = await one<any>(db, OWNER, `SELECT first_name, last_name, dob::text AS dob, phone FROM app.members WHERE approved_on IS NOT NULL AND dob IS NOT NULL AND phone <> '' LIMIT 1`);
+  const chk = await call('POST', '/public/join/check', { resumeToken: v.body.resumeToken, firstName: someone.first_name, lastName: someone.last_name, dob: someone.dob, phone: someone.phone });
+  ok(chk.status === 200 && chk.body.possibleMember === true && chk.body.phoneOnFile === true && Object.keys(chk.body).length === 2, `existing-person check: same person + phone on file, yes/no only (${JSON.stringify(chk.body)})`);
+  const chk2 = await call('POST', '/public/join/check', { resumeToken: v.body.resumeToken, firstName: 'Hana', lastName: 'Saleh', dob: '1990-02-03', phone: '7135550199' });
+  ok(chk2.body.possibleMember === false && chk2.body.phoneOnFile === false, 'no match for a new person (their own record does not count)');
+  ok((await call('POST', '/public/join/check', { resumeToken: 'y'.repeat(40), firstName: 'a', lastName: 'b', dob: '1990-01-01', phone: '' })).status === 401, 'check needs a proven email');
   const open = await call('GET', `/public/join/draft/${v.body.resumeToken}`);
   ok(open.status === 200 && open.body.email === half && open.body.data.about.firstName === 'Hana' && open.body.joinToken, 'the link opens the saved answers');
   const link = await call('POST', '/public/join/draft/link', { resumeToken: v.body.resumeToken });

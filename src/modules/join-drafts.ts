@@ -8,6 +8,7 @@
  *   PUT  /public/join/draft {resumeToken, step, data}   autosave (the website calls it after every change, debounced)
  *   GET  /public/join/draft/:token                      open a saved application (link from the email) → answers + joinToken
  *   POST /public/join/draft/link {resumeToken}          email "finish your application" with the link (30 days)
+ *   POST /public/join/check {resumeToken, firstName, lastName, dob, phone}   yes/no: same person / phone already on file
  *   POST /admin/members/:id/join-reminder               the office sends that link again (and may copy it to text it)
  *
  * The resume token is a login_codes row (purpose 'join-resume', 30 days, kept until the application is sent); only its
@@ -138,6 +139,22 @@ export const JOIN_DRAFT_ROUTES: Route[] = [
     if (!r) throw new HttpError(409, 'This application was already sent.', undefined, 'already-sent');
     const saved = await saveDraft(ctx, r.id, b.step, b.data, await planIdsOf(ctx), b.progress);
     return { status: 200, body: { saved: true, step: saved.step, at: new Date().toISOString() } };
+  }),
+  // J1 – gentle existing-person check after "About you": only yes/no answers (never whose record), only for someone
+  // whose email is proven (the saved-application link), and the answer is kept on their record for the office
+  route('POST', /^\/public\/join\/check$/, async (ctx) => {
+    const b = body(ctx); const email = await emailOfResume(ctx, String(b.resumeToken ?? ''));
+    if (!email) throw new HttpError(401, 'Confirm your email first.', undefined, 'resume-expired');
+    const first = s(b.firstName, 60).toLowerCase(), last = s(b.lastName, 60).toLowerCase(), dob = /^\d{4}-\d{2}-\d{2}$/.test(s(b.dob, 10)) ? s(b.dob, 10) : '';
+    const phone = s(b.phone, 30).replace(/\D/g, '').slice(-10);
+    const r = await one<{ person: boolean | null; phone: boolean | null }>(ctx.db, API(ctx), `SELECT
+        bool_or($2 <> '' AND $3 <> '' AND $4 <> '' AND lower(first_name) = $2 AND lower(last_name) = $3 AND dob = NULLIF($4, '')::date) AS person,
+        bool_or(length($5) = 10 AND right(regexp_replace(phone, '\\D', '', 'g'), 10) = $5) AS phone
+      FROM app.members WHERE archived IS NULL AND lower(email::text) <> $1 AND coalesce(record->>'joinStage', '') <> 'incomplete'`, [email, first, last, dob, phone]);
+    const out = { possibleMember: !!r?.person, phoneOnFile: !!r?.phone };
+    const me = await unfinishedOf(ctx, email);
+    if (me) await ctx.db.run(API(ctx), [{ sql: `UPDATE app.members SET record = jsonb_set(record, '{join}', coalesce(record->'join', '{}'::jsonb) || jsonb_build_object('checks', $3::jsonb)) WHERE org_id = $1::uuid AND id = $2`, params: [ctx.orgId, me.id, { ...out, at: new Date().toISOString(), notMe: b.notMe === true }] }]);
+    return { status: 200, body: out };
   }),
   route('GET', /^\/public\/join\/draft\/([A-Za-z0-9_-]{30,80})$/, async (ctx, mm) => {
     const email = await emailOfResume(ctx, mm[1]);
