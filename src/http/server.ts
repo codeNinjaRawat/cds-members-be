@@ -54,8 +54,10 @@ setRoutes(ROUTES);
 /** MEMBERS_CACHE_SECONDS (development against a far-away database): the member list is kept in memory for that long and
  *  dropped on any change (any POST / PUT / PATCH / DELETE). Off (0) unless set. */
 const MEMBER_CACHE = new Map<string, { rows: unknown[]; until: number }>();
-const CACHE_MS = () => Number(process.env.MEMBERS_CACHE_SECONDS ?? 0) * 1000;
+const CACHE_MS = () => Number(process.env.MEMBERS_CACHE_SECONDS ?? 60) * 1000;   // the rows of a large organization take seconds to build; every write through the API drops the cache
 export const dropMemberCache = () => MEMBER_CACHE.clear();
+/** The list leaves out what no list screen shows – the raw import record (wildapricot) is a third of every row; GET /admin/members/:id still has it. */
+const lean = (m: Member): Member => { const { wildapricot: _w, ...rest } = m as Member & { wildapricot?: unknown }; void _w; return rest as Member; };
 async function listMembers(ctx: Ctx, q: URLSearchParams): Promise<Member[]> {
   need(ctx, 'members.view');
   const search = (q.get('q') ?? '').trim().toLowerCase();
@@ -107,7 +109,7 @@ async function route(db: Db, req: Req): Promise<Res> {
     return { status: 200, body: { key, data: out } };
   }
   // members
-  if (path === '/admin/members' && method === 'GET') { const list = await listMembers(ctx, req.query); return { status: 200, body: { count: list.length, members: req.query.get('limit') === 'all' ? list : list.slice(0, Math.min(20_000, Number(req.query.get('limit') ?? 200) || 200)) } }; }   // ?limit=all: the admin's whole scope (its screens filter in the browser)
+  if (path === '/admin/members' && method === 'GET') { const list = (await listMembers(ctx, req.query)).map(lean); return { status: 200, body: { count: list.length, members: req.query.get('limit') === 'all' ? list : list.slice(0, Math.min(20_000, Number(req.query.get('limit') ?? 200) || 200)) } }; }   // ?limit=all: the admin's whole scope (its screens filter in the browser)
   if ((m = path.match(/^\/admin\/members\/([A-Za-z0-9-]+)$/)) && method === 'GET') { const mem = await getMember(ctx, m[1]); const sp = MembershipSettingsSchema.safeParse(await document(db, ctx.orgId, 'membership-settings')); const ms = sp.success ? sp.data : mockMembershipSettings; return { status: 200, body: { member: mem, status: statusOf(mem), eligibility: eligibility(mem, YEAR, ms.plans, ms.rules) } }; }
   if ((m = path.match(/^\/admin\/members\/([A-Za-z0-9-]+)\/approve$/)) && method === 'POST') {
     const mem = await getMember(ctx, m[1]); need(ctx, 'members.approve');
