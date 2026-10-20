@@ -47,7 +47,7 @@ const stripe: PayProvider = {
     return { id: j.id, url: j.url };
   },
 };
-const fake: PayProvider = { name: 'fake', open: async (o) => { const id = `cs_fake_${randomUUID().replace(/-/g, '')}`; return { id, url: `${o.successUrl.split('?')[0].replace(/\/[^/]*$/, '')}/pay/fake?session=${id}` }; } };
+const fake: PayProvider = { name: 'fake', open: async (o) => { const id = `cs_fake_${randomUUID().replace(/-/g, '')}`; return { id, url: `${new URL(o.successUrl).origin}/pay/fake?session=${id}` }; } };
 const provider = (): PayProvider => (process.env.PAYMENTS_PROVIDER === 'stripe' ? stripe : fake);
 // Stripe-format webhooks for both: the fake provider's events are signed the same way (STRIPE_WEBHOOK_SECRET)
 const providerName = () => provider().name;
