@@ -63,6 +63,27 @@ ok((await call('POST', '/public/membership/applications', { ...app(), joinToken:
 const ev2 = await call('POST', '/public/join/email/verify', { email, code: (await call('POST', '/public/join/email/start', { email })).body.devCode });
 ok(ev2.status === 200 && ev2.body.alreadyApplied?.applicationId === sub.body.applicationId && !ev2.body.joinToken && !JSON.stringify(ev2.body).match(/[A-Z]{3}-\d{5,}/), 'same email again: the waiting application is shown, not a second one (no member number)');
 
+/* ---------- J5: pay for family members ---------- */
+{
+  const ms = await call('GET', '/admin/documents/membership-settings', undefined, 'owner');
+  const data = structuredClone(ms.body.data); data.plans = data.plans.map((p: any) => (p.id === 'single' ? { ...p, familyMembers: { max: 2, perMemberCents: 2000 } } : p));
+  ok((await call('PUT', '/admin/documents/membership-settings', { data, note: 'family members on single' }, 'owner')).status === 200, 'plan allows family members (admin setting)');
+  const fe = 'family.head@example.org';
+  const fc = (await call('POST', '/public/join/email/start', { email: fe })).body.devCode;
+  const fv = await call('POST', '/public/join/email/verify', { email: fe, code: fc });
+  const base = app({ account: { email: fe, verified: true }, about: { ...app().about, firstName: 'Omar', lastName: 'Head', phone: '(713) 555-0161' }, pledge: { ...app().pledge, signature: 'Omar Head' } });
+  const mem = (n: number, over = {}) => ({ firstName: `Kin${n}`, lastName: 'Head', email: `kin${n}.head@example.org`, phone: `(713) 555-017${n}`, dob: '1995-03-0' + n, ...over });
+  const bad = await call('POST', '/public/membership/applications', { ...base, plan: { ...base.plan, members: [mem(1, { email: fe }), mem(2, { dob: '2015-01-01' })] }, joinToken: fv.body.joinToken });
+  ok(bad.status === 422 && bad.body.detail['plan.members.0.email'] && bad.body.detail['plan.members.1.dob'], `family member rules: own email, adult (${JSON.stringify(bad.body.detail)})`);
+  const good = await call('POST', '/public/membership/applications', { ...base, plan: { ...base.plan, members: [mem(1), mem(2)] }, joinToken: fv.body.joinToken });
+  const kids = await one<any>(db, OWNER, `SELECT count(*)::int AS n, bool_and(record->>'householdOf' = $1) AS linked, bool_and(street <> '') AS addr FROM app.members WHERE email IN ('kin1.head@example.org', 'kin2.head@example.org')`, [good.body.memberId]);
+  const pays = await one<any>(db, OWNER, `SELECT count(DISTINCT member_id)::int AS who, sum(amount_cents)::int AS cents FROM app.payments WHERE application_id = $1`, [good.body.applicationId]);
+  const mails = await one<any>(db, OWNER, `SELECT count(*)::int AS n FROM platform.outbox WHERE kind = 'join-family' AND to_address IN ('kin1.head@example.org', 'kin2.head@example.org')`);
+  ok(good.status === 201 && good.body.amountCents === good.body.lines.reduce((a: number, l: any) => a + l.cents, 0) && kids.n === 2 && kids.linked && kids.addr, `two family members: own records, linked, same address (${good.status} ${good.body?.error ?? ''} ${good.body.amountCents})`);
+  ok(pays.who === 3 && pays.cents === good.body.amountCents && mails.n === 2, `each member has their own dues row (${pays.who} people, $${pays.cents / 100}); family members emailed`);
+  await call('PUT', '/admin/documents/membership-settings', { data: ms.body.data, note: 'back' }, 'owner');
+}
+
 /* ---------- drafts: nothing typed is lost; the office sees who stopped ---------- */
 {
   const half = 'half.way@example.org';

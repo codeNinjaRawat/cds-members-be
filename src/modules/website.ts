@@ -113,10 +113,18 @@ export const WEBSITE_ROUTES: Route[] = [
     const method = String(co.method ?? 'card');
     if (!(payMethods(config) as readonly string[]).includes(method)) throw new HttpError(422, 'Choose one of the ways to pay shown.', { 'payment.method': 'Choose one of the ways to pay shown.' });
     const price = priceFor(plan, { start: today, years: a.plan.years, saleYear: settings.year });
-    const total = checkoutTotal(config, { label: `${plan.name} membership`, kind: 'dues', priceCents: price.totalCents, planId: plan.id, method: method as PayMethod, coverFees: co.coverFees === true, code: co.discountCode, today });
+    // "pay for family members" (plan.familyMembers): other adults of the household, each their own record and dues
+    const fam = plan.familyMembers ? (a.plan.members ?? []) : [];
+    const famEach = plan.familyMembers ? plan.familyMembers.perMemberCents * price.term.years : 0;
+    const total = checkoutTotal(config, { label: fam.length ? `${plan.name} membership + ${fam.length} family member${fam.length > 1 ? 's' : ''}` : `${plan.name} membership`, kind: 'dues', priceCents: price.totalCents + famEach * fam.length, planId: plan.id, method: method as PayMethod, coverFees: co.coverFees === true, code: co.discountCode, today });
     if (!total.codeOk) throw new HttpError(422, total.codeMessage ?? 'That code does not work.', { 'payment.code': total.codeMessage });
     const existing = await one<{ id: string; status: string; stage: string }>(ctx.db, API(ctx), `SELECT id, status, coalesce(record->>'joinStage', '') AS stage FROM app.members WHERE lower(email) = $1 AND archived IS NULL ORDER BY (status <> 'pending') DESC, created_at DESC LIMIT 1`, [email]);
-    const reuse = existing && existing.status === 'pending' && existing.stage === 'incomplete' ? existing.id : null;   // the record made when they started (or an import): it becomes the application
+    const reuse = existing && existing.status === 'pending' && existing.stage === 'incomplete' ? existing.id : null;
+    if (fam.length) {
+      const taken = (await rows(ctx.db, API(ctx), `SELECT lower(email::text) AS e FROM app.members WHERE archived IS NULL AND lower(email::text) = ANY($1::text[]) AND coalesce(record->>'joinStage', '') <> 'incomplete'`, [`{${fam.map((m) => `"${m.email.replace(/["\\]/g, '')}"`).join(',')}}`])) as { e: string }[];
+      const detail = Object.fromEntries(fam.map((m, i) => [i, m]).filter(([, m]) => taken.some((t) => t.e === (m as { email: string }).email)).map(([i]) => [`plan.members.${i}.email`, 'This email already belongs to a member – they can sign in and renew on their own.']));
+      if (Object.keys(detail).length) throw new HttpError(409, 'A family member is already on file.', detail);
+    }   // the record made when they started (or an import): it becomes the application
     if (existing && !reuse) { const msg = existing.status === 'pending' ? 'An application with this email is already waiting for approval – we will email you when it is reviewed.' : 'You are already a member – sign in to renew.'; throw new HttpError(409, msg, { 'account.email': msg }); }   // the detail is field messages – never the member number
 
     const appId = (await one<{ id: string }>(ctx.db, API(ctx), `SELECT 'APP-' || $2::text || '-' || lpad(app.next_no($1::uuid, 'application-' || $2::text, 4001)::text, 5, '0') AS id`, [ctx.orgId, settings.year]))!.id;
@@ -147,10 +155,31 @@ export const WEBSITE_ROUTES: Route[] = [
       { sql: `UPDATE platform.login_codes SET used_at = now() WHERE purpose = 'join-resume' AND org_id = $1 AND address = $2 AND used_at IS NULL`, params: [ctx.orgId, email] },
     ];
     if (plan.category === 'household' && a.plan.spouse?.firstName) stmts.push({ sql: `INSERT INTO app.relationships (org_id, member_id, relation, related_name) VALUES ($1::uuid, $2, 'spouse', $3)`, params: [ctx.orgId, memberId, `${a.plan.spouse.firstName} ${a.plan.spouse.lastName ?? ''}`.trim()] });
-    if (payStatus) stmts.push(...duesRows(ctx, { memberId, years: coveredYears(price.term.through, price.term.years, settings.year), totalCents: total.totalCents, method, status: payStatus, applicationId: appId, lines: total.lines, ref: appId }));
+    const famTotal = famEach * fam.length <= total.totalCents ? famEach * fam.length : 0;   // each family member's own dues row (Bylaws: own dues, paid by a relative)
+    if (payStatus) stmts.push(...duesRows(ctx, { memberId, years: coveredYears(price.term.through, price.term.years, settings.year), totalCents: total.totalCents - famTotal, method, status: payStatus, applicationId: appId, lines: total.lines, ref: appId }));
+
     // login_codes is a platform table: the API role runs the member part, the platform role marks the token
-    await ctx.db.run(API(ctx), stmts.filter((s) => !s.sql.includes('platform.login_codes')));
-    await ctx.db.run(PLATFORM, stmts.filter((s) => s.sql.includes('platform.login_codes')));
+    await ctx.db.run(API(ctx), stmts.filter((s) => !/platform\./.test(s.sql)));
+    await ctx.db.run(PLATFORM, stmts.filter((s) => /platform\./.test(s.sql)));
+    for (const [i, m] of fam.entries()) {
+      const fid = (await one<{ id: string }>(ctx.db, API(ctx), `SELECT app.next_member_id($1::uuid, $2) AS id`, [ctx.orgId, ctx.slug.slice(0, 3).toUpperCase()]))!.id;
+      const fapp = (await one<{ id: string }>(ctx.db, API(ctx), `SELECT 'APP-' || $2::text || '-' || lpad(app.next_no($1::uuid, 'application-' || $2::text, 4001)::text, 5, '0') AS id`, [ctx.orgId, settings.year]))!.id;
+      const fs: Statement[] = [
+        { sql: `INSERT INTO app.members (org_id, id, first_name, last_name, email, phone, dob, street, city, state, zip, plan, joined_year, applied_on, commitment, source, record)
+            VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::date, $8, $9, $10, $11, $12, $13::int, $14::date, 'programs', 'website', $15::jsonb)`,
+          params: [ctx.orgId, fid, m.firstName, m.lastName, m.email, fmtPhone(m.phone), m.dob, [a.about.street, a.about.unit].filter(Boolean).join(' '), a.about.city, a.about.state, a.about.zip.slice(0, 5), plan.id, yearOf(today), today,
+            { householdOf: memberId, audit: [{ at: new Date().toISOString(), by: 'Website', action: 'Applied', detail: `Family member on ${a.about.firstName} ${a.about.lastName}'s application ${appId}` }] }] },
+        { sql: `INSERT INTO app.applications (org_id, id, member_id, kind, email, first_name, last_name, zip, plan_id, data, consents, status, paid, submitted_at, source)
+            VALUES ($1::uuid, $2, $3, 'new', $4, $5, $6, $7, $8, $9::jsonb, '{}'::jsonb, 'submitted', $10::boolean, now(), 'website')`,
+          params: [ctx.orgId, fapp, fid, m.email, m.firstName, m.lastName, a.about.zip.slice(0, 5), plan.id, { familyOf: appId, member: m }, !total.needsPayment] },
+        { sql: `INSERT INTO app.relationships (org_id, member_id, relation, related_id, related_name) VALUES ($1::uuid, $2, 'other', $3, $4)`, params: [ctx.orgId, memberId, fid, `${m.firstName} ${m.lastName}`] },
+        { sql: `INSERT INTO platform.outbox (org_id, channel, to_address, subject, body, kind) VALUES ($1, 'email', $2, $3, $4, 'join-family')`,
+          params: [ctx.orgId, m.email, `${a.about.firstName} ${a.about.lastName} added you to a membership application`, `Assalamu alaikum ${m.firstName},\n\n${a.about.firstName} ${a.about.lastName} applied for membership for you as a family member (application ${fapp}). You will get your own sign-in with this email once it is approved.\n\nIf this is a mistake, reply to this email and we will remove it.`] }];
+      if (payStatus && famTotal) fs.push(...duesRows(ctx, { memberId: fid, years: coveredYears(price.term.through, price.term.years, settings.year), totalCents: famEach, method, status: payStatus, applicationId: appId, lines: total.lines, ref: `${appId}-F${i + 1}` }));
+      // one member at a time: the next member number is read from the table
+      await ctx.db.run(API(ctx), fs.filter((x) => !/platform\./.test(x.sql)));
+      await ctx.db.run(PLATFORM, fs.filter((x) => /platform\./.test(x.sql)));
+    }
     const placed = await one<{ center: string; zone: string; center_id: string | null }>(ctx.db, API(ctx), 'SELECT center, zone, center_id FROM app.members WHERE id = $1', [memberId]);
     // a border request: they live in one masjid's area but ask for another → a masjid-change request for the office
     if (a.about.borderRequestCenterId) await ctx.db.run(API(ctx), [{ sql: `INSERT INTO app.center_changes (org_id, member_id, from_center, to_center, reason) SELECT $1::uuid, $2, NULLIF($3, '')::uuid, id, 'Asked on the join form (lives near a border)' FROM app.centers WHERE code = $4 AND active AND id IS DISTINCT FROM NULLIF($3, '')::uuid`, params: [ctx.orgId, memberId, placed?.center_id ?? '', a.about.borderRequestCenterId] }]);
