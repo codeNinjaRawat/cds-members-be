@@ -26,8 +26,8 @@ const MAX_DRAFT = 60_000;   // characters of JSON – a whole join form is far s
  *  organization's own website (founding organization's address, else <slug>.<base domain>) – never the admin's address. */
 export async function siteOf(ctx: Ctx): Promise<string> {
   if (process.env.PUBLIC_SITE_URL) return process.env.PUBLIC_SITE_URL.replace(/\/$/, '');
-  const h = String(ctx.req.headers['x-org-host'] ?? '').trim().toLowerCase();
-  if (ctx.req.path.startsWith('/public/') && h && /^[a-z0-9.-]+(:\d+)?$/.test(h)) return `${/^(localhost|127\.|[a-z0-9-]+\.localhost)/.test(h) ? 'http' : 'https'}://${h}`;
+  const h = String(ctx.req?.headers?.['x-org-host'] ?? '').trim().toLowerCase();
+  if (String(ctx.req?.path ?? '').startsWith('/public/') && h && /^[a-z0-9.-]+(:\d+)?$/.test(h)) return `${/^(localhost|127\.|[a-z0-9-]+\.localhost)/.test(h) ? 'http' : 'https'}://${h}`;
   const r = await one<{ h: string | null }>(ctx.db, PLATFORM, 'SELECT legacy_web_host::text AS h FROM platform.organizations WHERE id = $1::uuid', [ctx.orgId]);
   return `https://${r?.h || `${ctx.slug}.${process.env.BASE_DOMAIN ?? 'nextgrow.pro'}`}`;
 }

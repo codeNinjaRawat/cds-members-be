@@ -23,6 +23,7 @@ import { donationSettings } from './giving.js';
 import { systemContext } from '../jobs/runner.js';
 import * as D from '@/lib/community/donations';
 import * as F from '@/lib/community/fundraising';
+import { siteOf } from './join-drafts.js';
 
 const API = (ctx: Ctx) => ({ org: ctx.orgId, role: 'app_api' as const });
 const body = (ctx: Ctx) => (ctx.req.body ?? {}) as Record<string, unknown>;
@@ -51,7 +52,7 @@ const provider = (): PayProvider => (process.env.PAYMENTS_PROVIDER === 'stripe' 
 // Stripe-format webhooks for both: the fake provider's events are signed the same way (STRIPE_WEBHOOK_SECRET)
 const providerName = () => provider().name;
 
-async function site(ctx: Ctx) { return process.env.PUBLIC_SITE_URL ?? `https://${ctx.slug}.${process.env.BASE_DOMAIN ?? 'nextgrow.pro'}`; }
+const site = siteOf;   // the website the visitor is on, else the organization's own website
 
 const Gift = z.object({ amountCents: z.number().int().min(100).max(10_000_000), fund: z.string().default(''), campaignId: z.string().default(''), pageId: z.string().default(''), name: z.string().trim().min(2).max(80),
   email: z.string().trim().toLowerCase().email().max(120), anonymous: z.boolean().default(false), showName: z.boolean().default(true), monthly: z.boolean().default(false), center: z.string().max(80).default('') });

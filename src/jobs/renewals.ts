@@ -8,6 +8,7 @@ import { rows, type Statement } from '../db/sql.js';
 import { PLATFORM, document, type Ctx } from '../http/core.js';
 import { CommunicationSchema, mockCommunication, render, renewalEmailDates, type MacroKey } from '@/lib/community/communication';
 import { DEFAULT_LIFECYCLE, MembershipSettingsSchema, mockMembershipSettings } from '@/lib/content/membership';
+import { siteOf } from '../modules/join-drafts.js';
 
 const fmt = (d: string) => `${d.slice(5, 7)}/${d.slice(8, 10)}/${d.slice(0, 4)}`;
 
@@ -18,7 +19,7 @@ export async function runRenewalJobs(ctx: Ctx, today: string) {
   const cP = CommunicationSchema.safeParse(await document(ctx.db, ctx.orgId, 'communication')); const comm = cP.success ? cP.data : mockCommunication;
   const lc = ms.lifecycle ?? DEFAULT_LIFECYCLE;
   const org = (await rows(ctx.db, PLATFORM, 'SELECT name, short_name FROM platform.organizations WHERE id = $1', [ctx.orgId]))[0] as { name: string; short_name: string } | undefined;
-  const site = process.env.PUBLIC_SITE_URL ?? `https://${ctx.slug}.${process.env.BASE_DOMAIN ?? 'nextgrow.pro'}`;
+  const site = await siteOf(ctx);
   // members with a renewal date inside the window the lifecycle can reach (60 days before … overdue + 60 after)
   const list = (await rows(ctx.db, API, `SELECT m.id, m.first_name, m.last_name, m.email, m.plan, m.center, coalesce(z.name, '') AS zone, m.paid_through::text AS paid_through FROM app.members m LEFT JOIN app.zones z ON z.org_id = m.org_id AND z.id = m.zone_id
     WHERE m.archived IS NULL AND m.email <> '' AND m.paid_through IS NOT NULL AND m.status <> 'life' AND m.paid_through BETWEEN $1::date - 400 AND $1::date + 120`, [today])) as { id: string; first_name: string; last_name: string; email: string; plan: string; center: string; zone: string; paid_through: string }[];

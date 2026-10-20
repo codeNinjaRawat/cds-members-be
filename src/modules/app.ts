@@ -38,6 +38,7 @@ import { RecordsSchema, mockRecords, recordsFor } from '@/lib/community/records'
 import { PrayerSettingsSchema, mockPrayerSettings, dayTimes, clock, IQAMAH_PRAYERS, PRAYERS, PRAYER_NAME } from '@/lib/community/prayer';
 import * as E from '@/lib/community/events';
 import type { Family, Person } from '@/lib/family/family';
+import { siteOf } from './join-drafts.js';
 
 const API = (ctx: Ctx) => ({ org: ctx.orgId, role: 'app_api' as const });
 const body = (ctx: Ctx) => (ctx.req.body ?? {}) as Record<string, unknown>;
@@ -45,7 +46,6 @@ const ACCESS_MIN = 15;
 const parse = async <S extends z.ZodTypeAny>(ctx: Ctx, key: string, schema: S, fallback: z.output<S>): Promise<z.output<S>> => { const p = schema.safeParse(await document(ctx.db, ctx.orgId, key)); return p.success ? p.data : fallback; };
 const settingsOf = (ctx: Ctx) => parse(ctx, 'membership-settings', MembershipSettingsSchema, mockMembershipSettings);
 const configOf = (ctx: Ctx) => parse(ctx, 'org-config', OrgConfigSchema, mockOrgConfig);
-const siteUrl = (ctx: Ctx) => process.env.PUBLIC_SITE_URL ?? `https://${ctx.slug}.${process.env.BASE_DOMAIN ?? 'nextgrow.pro'}`;
 const mask = (a: string) => (a.includes('@') ? a.replace(/^(.)[^@]*(@.*)$/, '$1•••$2') : `•••-•••-${a.replace(/\D/g, '').slice(-4)}`);
 const mdy = (iso: string) => `${iso.slice(5, 7)}/${iso.slice(8, 10)}/${iso.slice(0, 4)}`;
 const nowLocal = () => new Date().toLocaleString('sv-SE', { timeZone: orgTz() }).slice(0, 16).replace(' ', 'T');
@@ -262,7 +262,7 @@ export const APP_ROUTES: Route[] = [
     const org = await one<{ slug: string; name: string; status: string; timezone: string }>(ctx.db, PLATFORM, 'SELECT slug, name, status, timezone FROM platform.organizations WHERE id = $1', [ctx.orgId]);
     const sc = await document<{ org?: { name?: string; shortName?: string; email?: string; phone?: { display?: string } }; announcement?: { id: string; text: string; tone?: string; link?: { href: string }; startsAt?: string; endsAt?: string } | null; announcements?: unknown[] }>(ctx.db, ctx.orgId, 'site-config');
     const [ms, si, ver] = await Promise.all([settingsOf(ctx), signInSettings(ctx.db, ctx.orgId), one<{ v: string }>(ctx.db, API(ctx), `SELECT coalesce(max(published_at), now())::text AS v FROM app.documents`)]);
-    const site = siteUrl(ctx); const ann = sc?.announcement;
+    const site = (await siteOf(ctx)); const ann = sc?.announcement;
     return ok({
       org: { slug: org!.slug, name: sc?.org?.name || org!.name, shortName: sc?.org?.shortName || org!.slug.toUpperCase(), state: org!.status === 'maintenance' ? 'maintenance' : 'active', supportEmail: sc?.org?.email ?? '', supportPhone: sc?.org?.phone?.display ?? '', timezone: org!.timezone || 'America/Chicago' },
       flags: { 'auth.google': false, 'notify.sms': si.methods.phoneCode && ms.flags.sms, 'notify.push': process.env.APP_PUSH === '1', 'payments.wallets': false },
@@ -438,7 +438,7 @@ export const APP_ROUTES: Route[] = [
     if ((recent?.n ?? 0) >= 3) throw new HttpError(429, 'You sent several invitations today – try again tomorrow.');
     const org = await one<{ name: string }>(ctx.db, PLATFORM, 'SELECT name FROM platform.organizations WHERE id = $1', [ctx.orgId]);
     await ctx.db.run(PLATFORM, [{ sql: `INSERT INTO platform.outbox (org_id, channel, to_address, subject, body, kind) VALUES ($1, 'email', $2, $3, $4, 'household-invite')`, params: [ctx.orgId, email, `${m.first_name} ${m.last_name} invites you to ${org?.name ?? 'the community'}`,
-      `Assalamu alaikum,\n\n${m.first_name} ${m.last_name} has a household membership and invites you to complete your own record (your own card and vote).\n\nStart here: ${siteUrl(ctx)}/join?household=${encodeURIComponent(m.id)}\n\nHousehold of member ${m.id}.`] }]);
+      `Assalamu alaikum,\n\n${m.first_name} ${m.last_name} has a household membership and invites you to complete your own record (your own card and vote).\n\nStart here: ${(await siteOf(ctx))}/join?household=${encodeURIComponent(m.id)}\n\nHousehold of member ${m.id}.`] }]);
     await audit(ctx, 'members', 'Spouse invited from the app', mask(email), m.id);
     return ok({ sentTo: mask(email) }, 201);
   })),
@@ -541,7 +541,7 @@ export const APP_ROUTES: Route[] = [
       funds: s.funds.filter((f) => f.active).map((f) => ({ id: f.id, label: f.name, note: f.zakat ? 'Zakat-eligible' : f.restricted ? 'Used only for this purpose' : null })),
       masjids: centers, presetsCents: [2500, 5000, 10000, 25000], minCents: 100, maxCents: 10_000_000,
       feeCoverPct: cfg.payments.coverFees.enabled ? cfg.payments.coverFees.percent : 0, monthlyAllowed: cfg.payments.card,
-      zakatApplication: { enabled: true, note: `Need help with Zakat? Apply on the website (${siteUrl(ctx)}/zakat) – the committee answers in confidence.` },
+      zakatApplication: { enabled: true, note: `Need help with Zakat? Apply on the website (${(await siteOf(ctx))}/zakat) – the committee answers in confidence.` },
       campaigns: (camps.campaigns ?? []).filter((c) => c.state === 'live').map((c) => ({ id: c.id, title: c.name, raisedCents: c.totalCents ?? 0, goalCents: c.goalCents ?? 0, masjid: c.center || null })),
     });
   }),

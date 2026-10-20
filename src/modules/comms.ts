@@ -32,6 +32,7 @@ import * as C from '@/lib/community/campaigns';
 import { CommunicationSchema, mockCommunication, type CommunicationDoc, type MacroKey } from '@/lib/community/communication';
 import { MembershipSettingsSchema, mockMembershipSettings } from '@/lib/content/membership';
 import { ageOn, eligibility, lastPayment, renewalOf, statusOf, type Member } from '@/lib/members/members';
+import { siteOf } from './join-drafts.js';
 
 const API = (ctx: Ctx) => ({ org: ctx.orgId, role: 'app_api' as const });
 const body = (ctx: Ctx) => (ctx.req.body ?? {}) as Record<string, unknown>;
@@ -80,7 +81,7 @@ export async function refreshAutomatic(ctx: Ctx) {
 /* ---------------- unsubscribe links ---------------- */
 export const unsubscribeToken = (orgId: string, address: string) => { const a = Buffer.from(address.toLowerCase()).toString('base64url'); return `${a}.${signLink(`${orgId}|${a}`)}`; };
 function readToken(orgId: string, token: string) { const [a, sig] = token.split('.'); if (!a || !sig || signLink(`${orgId}|${a}`) !== sig) throw new HttpError(404, 'This link does not work.'); return Buffer.from(a, 'base64url').toString('utf8'); }
-async function siteBase(ctx: Ctx) { return process.env.PUBLIC_SITE_URL ?? `https://${ctx.slug}.${process.env.BASE_DOMAIN ?? 'nextgrow.pro'}`; }
+const siteBase = siteOf;
 async function orgValues(ctx: Ctx) {
   const o = await one<{ name: string; short_name: string }>(ctx.db, PLATFORM, 'SELECT name, short_name FROM platform.organizations WHERE id = $1', [ctx.orgId]);
   return { 'Org.Name': o?.name ?? ctx.slug, 'Org.ShortName': o?.short_name || ctx.slug.toUpperCase() } as Partial<Record<MacroKey, string>>;
