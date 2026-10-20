@@ -61,7 +61,45 @@ ok((await call('POST', '/public/membership/applications', { ...app(), joinToken:
   ok((open?.n ?? 0) > 0 && Array.isArray(shaped?.payments) && shaped!.payments.length === 0, `check waiting: ${open?.n} open payment(s), 0 counted as paid on the member`);
 }
 const ev2 = await call('POST', '/public/join/email/verify', { email, code: (await call('POST', '/public/join/email/start', { email })).body.devCode });
-ok(ev2.status === 409 && ev2.body.error.includes('already waiting') && !JSON.stringify(ev2.body).match(/[A-Z]{3}-\d{5,}/), 'second application with the same email refused at the email step (no member number shown)');
+ok(ev2.status === 200 && ev2.body.alreadyApplied?.applicationId === sub.body.applicationId && !ev2.body.joinToken && !JSON.stringify(ev2.body).match(/[A-Z]{3}-\d{5,}/), 'same email again: the waiting application is shown, not a second one (no member number)');
+
+/* ---------- drafts: nothing typed is lost; the office sees who stopped ---------- */
+{
+  const half = 'half.way@example.org';
+  const code = (await call('POST', '/public/join/email/start', { email: half })).body.devCode;
+  const v = await call('POST', '/public/join/email/verify', { email: half, code });
+  ok(v.status === 200 && v.body.resumeToken?.length > 30 && v.body.resumed === false, 'verify gives a 30-day saved-application link');
+  const rec = await one<{ id: string; stage: string; step: string }>(db, OWNER, `SELECT id, record->>'joinStage' AS stage, record->'join'->>'step' AS step FROM app.members WHERE email = $1`, [half]);
+  ok(rec?.stage === 'incomplete' && rec.step === 'about', `a record exists from the moment the email is proven (${rec?.id})`);
+  const sv = await call('PUT', '/public/join/draft', { resumeToken: v.body.resumeToken, step: 'plan', progress: { index: 2, total: 6, label: 'Plan' }, data: { about: { firstName: 'Hana', lastName: 'Saleh', phone: '7135550199', dob: '1990-02-03', street: '5 Oak St', city: 'Pasadena', state: 'tx', zip: se1zip, idImage: 'data:image/png;base64,AAAA' }, plan: { planId: 'single' }, otp: { code: '123456' }, custom: { gender: 'Female' } } });
+  ok(sv.status === 200 && sv.body.saved, 'autosave');
+  const after = await one<any>(db, OWNER, `SELECT first_name, last_name, phone, dob::text, state, zip, plan, center, record->'join' AS j FROM app.members WHERE id = $1`, [rec!.id]);
+  ok(after.first_name === 'Hana' && after.phone === '(713) 555-0199' && after.state === 'TX' && after.zip === se1zip && after.plan === 'single' && after.center === 'Southeast Islamic Center 1', 'answers land on the record (and it is placed by ZIP)');
+  ok(after.j.step === 'plan' && after.j.furthest === 'Plan' && after.j.furthestIndex === 2 && after.j.draft.custom.gender === 'Female' && !JSON.stringify(after.j.draft).includes('data:image') && !after.j.draft.otp, 'whole draft kept – no pictures, no codes');
+  const sv2 = await call('PUT', '/public/join/draft', { resumeToken: v.body.resumeToken, step: 'about', progress: { index: 1, total: 6, label: 'About you' }, data: { about: { firstName: 'Hana', lastName: '' } } });
+  const back = await one<any>(db, OWNER, `SELECT last_name, record->'join'->>'furthest' AS furthest FROM app.members WHERE id = $1`, [rec!.id]);
+  ok(sv2.status === 200 && back.last_name === 'Saleh' && back.furthest === 'Plan', 'clearing a field never wipes what they gave; furthest step kept');
+  ok((await call('PUT', '/public/join/draft', { resumeToken: 'x'.repeat(40), step: 'plan', data: {} })).status === 401, 'unknown link refused');
+  const open = await call('GET', `/public/join/draft/${v.body.resumeToken}`);
+  ok(open.status === 200 && open.body.email === half && open.body.data.about.firstName === 'Hana' && open.body.joinToken, 'the link opens the saved answers');
+  const link = await call('POST', '/public/join/draft/link', { resumeToken: v.body.resumeToken });
+  const mail = await one<{ body: string }>(db, OWNER, `SELECT body FROM platform.outbox WHERE kind = 'join-link' AND to_address = $1 ORDER BY created_at DESC LIMIT 1`, [half]);
+  ok(link.body.sent && mail?.body.includes(`resume=${v.body.resumeToken}`), 'save and finish later emails the link');
+  // the office: not approvable, a reminder with a fresh link
+  ok((await call('POST', `/admin/members/${rec!.id}/approve`, { ref: 'x' }, 'owner')).status === 409, 'an unfinished application cannot be approved');
+  const rem = await call('POST', `/admin/members/${rec!.id}/join-reminder`, {}, 'owner');
+  const rr = await one<any>(db, OWNER, `SELECT record->'join'->>'reminders' AS n, record->'audit'->-1->>'action' AS last FROM app.members WHERE id = $1`, [rec!.id]);
+  ok(rem.status === 200 && /resume=/.test(rem.body.link) && rr.n === '1' && rr.last === 'Reminder sent', 'office reminder: link emailed, counted, in the audit log');
+  // coming back with the email: same record, answers back
+  const code2 = (await call('POST', '/public/join/email/start', { email: half })).body.devCode;
+  const v2 = await call('POST', '/public/join/email/verify', { email: half, code: code2 });
+  ok(v2.body.resumed === true && v2.body.data.about.firstName === 'Hana' && v2.body.step === 'about', 'verifying again picks up the same answers');
+  // finishing: the same record becomes the application (via the saved link – the 12-hour token is not needed)
+  const fin = await call('POST', '/public/membership/applications', { ...app({ account: { email: half, verified: true }, about: { ...app().about, firstName: 'Hana', lastName: 'Saleh' }, pledge: { ...app().pledge, signature: 'Hana Saleh' } }), resumeToken: v.body.resumeToken });
+  const done = await one<any>(db, OWNER, `SELECT count(*)::int AS n, max(record->>'joinStage') AS stage, max(record->'join'->>'step') AS step, bool_or(record->'join' ? 'draft') AS draft FROM app.members WHERE email = $1`, [half]);
+  ok(fin.status === 201 && fin.body.memberId === rec!.id && done.n === 1 && done.stage === null && done.step === 'done' && !done.draft, `finished on the same record (${fin.status} ${fin.body?.error ?? ''})`);
+  ok((await call('GET', `/public/join/draft/${v.body.resumeToken}`)).status === 404, 'the link is done once the application is sent');
+}
 const mid = sub.body.memberId;
 const row = await one<{ status: string; approved_on: string | null }>(db, OWNER, 'SELECT status, approved_on FROM app.members WHERE id = $1', [mid]);
 ok(row!.status === 'pending' && row!.approved_on === null, 'the applicant is pending');

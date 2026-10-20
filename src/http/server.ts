@@ -28,6 +28,7 @@ import { project } from '../modules/projections.js';
 import { MEMBER_SQL, toMember, type MemberRow } from '../modules/member-shape.js';
 import { MEMBER_ROUTES } from '../modules/members.js';
 import { WEBSITE_ROUTES } from '../modules/website.js';
+import { JOIN_DRAFT_ROUTES } from '../modules/join-drafts.js';
 import { HELPDESK_ROUTES, TASK_ROUTES } from '../modules/helpdesk.js';
 import { EVENT_ROUTES } from '../modules/events.js';
 import { GIVING_ROUTES } from '../modules/giving.js';
@@ -45,7 +46,7 @@ import { RECORD_ROUTES } from '../modules/records-admin.js';
 import { MEMBER_EXTRA_ROUTES } from '../modules/member-extras.js';
 import { APP_ROUTES } from '../modules/app.js';
 /** Route modules (B1 onward). The legacy routes below stay until each moves into its module. */
-export const ROUTES: Route[] = [...AUTH_ROUTES, ...DOCUMENT_ROUTES, ...MEMBER_ROUTES, ...WEBSITE_ROUTES, ...HELPDESK_ROUTES, ...TASK_ROUTES, ...EVENT_ROUTES, ...GIVING_ROUTES, ...FINANCE_ROUTES, ...ZAKAT_ROUTES, ...GOVERNANCE_ROUTES, ...COMMS_ROUTES, ...CHECKOUT_ROUTES, ...ORG_PLATFORM_ROUTES, ...FILE_ROUTES, ...SITE_ROUTES, ...RECORD_ROUTES, ...MEMBER_EXTRA_ROUTES, ...APP_ROUTES];
+export const ROUTES: Route[] = [...AUTH_ROUTES, ...DOCUMENT_ROUTES, ...JOIN_DRAFT_ROUTES, ...MEMBER_ROUTES, ...WEBSITE_ROUTES, ...HELPDESK_ROUTES, ...TASK_ROUTES, ...EVENT_ROUTES, ...GIVING_ROUTES, ...FINANCE_ROUTES, ...ZAKAT_ROUTES, ...GOVERNANCE_ROUTES, ...COMMS_ROUTES, ...CHECKOUT_ROUTES, ...ORG_PLATFORM_ROUTES, ...FILE_ROUTES, ...SITE_ROUTES, ...RECORD_ROUTES, ...MEMBER_EXTRA_ROUTES, ...APP_ROUTES];
 setRoutes(ROUTES);
 
 /* ---------------- members ---------------- */
@@ -114,6 +115,7 @@ async function route(db: Db, req: Req): Promise<Res> {
     const blockers = approvalBlockers(mem, ms.rules, ms.year, ms.plans);   // the organization's plans and the year being sold
     if (blockers.length) throw new HttpError(409, 'The approval rule asks for this first.', blockers);
     if (mem.approvedOn) throw new HttpError(409, 'Already approved.');
+    if (mem.joinStage === 'incomplete') throw new HttpError(409, 'This application is not finished yet – send them the link to finish it (Work queues › Incomplete applications).');
     const ref = String((req.body as { ref?: string })?.ref ?? '').slice(0, 120);
     await db.run({ org: ctx.orgId, role: 'app_api' }, [{ sql: `UPDATE app.members SET approved_on = $2::date, record = jsonb_set(record, '{audit}', coalesce(record->'audit', '[]'::jsonb) || $3::jsonb) WHERE id = $1`, params: [mem.id, today, [{ at: new Date().toISOString(), by: ctx.me!.name, action: 'Approved', detail: ref || `${ms.rules.approval.by || 'Board'} approval` }]] }]);
     await db.run({ org: ctx.orgId, role: 'app_api' }, [{ sql: 'SELECT app.refresh_status($1::uuid, $2)', params: [ctx.orgId, mem.id] }, { sql: `UPDATE app.applications SET status = 'approved', decided_at = now(), decided_by = $2 WHERE member_id = $1 AND status NOT IN ('approved', 'rejected', 'withdrawn')`, params: [mem.id, ctx.me!.name] }]);

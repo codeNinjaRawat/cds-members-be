@@ -27,6 +27,7 @@ import { checkoutTotal, canMove, type PayMethod, type PaymentStatus } from '@/li
 import { recordsFor, RecordsSchema, mockRecords } from '@/lib/community/records';
 import { OfficialsSchema, mockOfficials, memberPastLeadership } from '@/lib/community/officials';
 import { WorkSettingsSchema, mockWorkSettings, publicHelpdesk } from '@/lib/community/work';
+import { emailOfResume, newResumeToken, prefillOf, startUnfinished, unfinishedOf } from './join-drafts.js';
 
 const API = (ctx: Ctx) => ({ org: ctx.orgId, role: 'app_api' as const });
 const body = (ctx: Ctx) => (ctx.req.body ?? {}) as Record<string, unknown>;
@@ -51,7 +52,7 @@ export const WEBSITE_ROUTES: Route[] = [
   route('POST', /^\/public\/join\/email\/start$/, async (ctx) => {
     const email = String(body(ctx).email ?? '').trim().toLowerCase();
     if (!z.string().email().safeParse(email).success) throw new HttpError(400, 'Enter a valid email address, like name@example.com.');
-    const recent = await one<{ n: number }>(ctx.db, PLATFORM, `SELECT count(*)::int AS n FROM platform.login_codes WHERE address = $1 AND created_at > now() - interval '15 minutes'`, [email]);
+    const recent = await one<{ n: number }>(ctx.db, PLATFORM, `SELECT count(*)::int AS n FROM platform.login_codes WHERE address = $1 AND purpose = 'join' AND created_at > now() - interval '15 minutes'`, [email]);
     // development only (AUTH_DEV_CODES=1, never in production): same switches as the admin sign-in – AUTH_DEV_NO_LIMITS and AUTH_DEV_FIXED_CODE
     const dev = process.env.AUTH_DEV_CODES === '1' && process.env.NODE_ENV !== 'production';
     if ((recent?.n ?? 0) >= (dev && process.env.AUTH_DEV_NO_LIMITS === '1' ? 1000 : 5)) throw new HttpError(429, 'Too many codes asked for. Wait 15 minutes and try again.');
@@ -69,16 +70,26 @@ export const WEBSITE_ROUTES: Route[] = [
     if (!c) throw new HttpError(400, 'That code has expired. Ask for a new one.');
     if (c.attempts >= 5) throw new HttpError(429, 'Too many tries. Ask for a new code.');
     if (!c.ok) { await ctx.db.run(PLATFORM, [{ sql: 'UPDATE platform.login_codes SET attempts = attempts + 1 WHERE id = $1::uuid', params: [c.id] }]); throw new HttpError(400, 'That code is not right.'); }
-    // the email is proven now: tell its owner straight away when it already has an application or a membership (the
-    // application would be refused at the end otherwise)
-    const existing = await one<{ status: string; stage: string }>(ctx.db, API(ctx), `SELECT status, coalesce(record->>'joinStage', '') AS stage FROM app.members WHERE lower(email) = $1 ORDER BY (archived IS NULL) DESC LIMIT 1`, [email]);
-    if (existing && existing.status !== 'archived') throw new HttpError(409, existing.status !== 'pending' ? 'You are already a member – sign in to renew.'
-      : existing.stage === 'incomplete' ? 'We already have an unfinished application for this email. Contact the office and we will finish it with you.'
-      : 'An application with this email is already waiting for approval – we will email you when it is reviewed.', undefined, existing.status === 'pending' ? 'already-applied' : 'already-member');
+    // The email is proven. Be gentle: a member is sent to sign in, a waiting application is shown (not refused), and an
+    // unfinished one – started here, or an imported contact who never finished – opens with everything already given.
+    const existing = await one<{ id: string; status: string; stage: string; app_id: string | null; submitted: string | null; app_status: string | null }>(ctx.db, API(ctx),
+      `SELECT m.id, m.status, coalesce(m.record->>'joinStage', '') AS stage, a.id AS app_id, a.submitted_at::date::text AS submitted, a.status AS app_status
+         FROM app.members m LEFT JOIN LATERAL (SELECT id, submitted_at, status FROM app.applications x WHERE x.org_id = m.org_id AND x.member_id = m.id ORDER BY submitted_at DESC LIMIT 1) a ON true
+        WHERE lower(m.email) = $1 AND m.archived IS NULL ORDER BY (m.status <> 'pending') DESC, m.created_at DESC LIMIT 1`, [email]);
+    if (existing && existing.status !== 'pending') throw new HttpError(409, 'You are already a member – sign in to renew.', undefined, 'already-member');
+    const used = { sql: 'UPDATE platform.login_codes SET used_at = now() WHERE id = $1::uuid', params: [c.id] };
+    if (existing && existing.stage !== 'incomplete') {
+      await ctx.db.run(PLATFORM, [used]);
+      return { status: 200, body: { alreadyApplied: { applicationId: existing.app_id, submittedOn: existing.submitted, status: existing.app_status ?? 'submitted' } } };
+    }
+    const memberId = existing ? existing.id : await startUnfinished(ctx, email);
+    const draft = existing ? await unfinishedOf(ctx, email) : null;
+    if (existing) await ctx.db.run(API(ctx), [{ sql: `UPDATE app.members SET record = jsonb_set(record, '{join}', coalesce(record->'join', '{}'::jsonb) || jsonb_build_object('lastSeen', now())) WHERE org_id = $1::uuid AND id = $2`, params: [ctx.orgId, memberId] }]);
     const token = newToken();
-    await ctx.db.run(PLATFORM, [{ sql: 'UPDATE platform.login_codes SET used_at = now() WHERE id = $1::uuid', params: [c.id] },
-      { sql: `INSERT INTO platform.login_codes (org_id, channel, address, purpose, code_hash, expires_at) VALUES ($1, 'email', $2, 'verify-email', decode($3, 'hex'), now() + interval '2 hours')`, params: [ctx.orgId, email, sha256hex(token)] }]);
-    return { status: 200, body: { joinToken: token, expiresInMinutes: 120 } };
+    await ctx.db.run(PLATFORM, [used,
+      { sql: `INSERT INTO platform.login_codes (org_id, channel, address, purpose, code_hash, expires_at) VALUES ($1, 'email', $2, 'verify-email', decode($3, 'hex'), now() + interval '12 hours')`, params: [ctx.orgId, email, sha256hex(token)] }]);
+    const resumeToken = await newResumeToken(ctx.db, ctx.orgId, email);
+    return { status: 200, body: { joinToken: token, resumeToken, expiresInMinutes: 720, resumed: !!existing, step: draft ? String(draft.join?.step ?? 'about') : 'about', data: draft ? prefillOf(draft) : {} } };
   }),
 
   /* ---------------- join: the application ---------------- */
@@ -89,7 +100,9 @@ export const WEBSITE_ROUTES: Route[] = [
     const email = String((raw.account as { email?: string } | undefined)?.email ?? '').trim().toLowerCase();
     // the email must have been proven on this server – the browser's "verified: true" is not enough
     const tok = await one<{ id: string }>(ctx.db, PLATFORM, `SELECT id FROM platform.login_codes WHERE address = $1 AND purpose = 'verify-email' AND org_id = $2 AND used_at IS NULL AND expires_at > now() AND code_hash = decode($3, 'hex')`, [email, ctx.orgId, sha256hex(String(raw.joinToken ?? ''))]);
-    if (!tok) throw new HttpError(401, 'Verify your email with the 6-digit code first.', { 'account.verified': 'Verify your email with the 6-digit code first.' });
+    // a saved-application link proves the email too (it was sent there) – a long pause never loses the application
+    const viaLink = !tok && raw.resumeToken ? (await emailOfResume(ctx, String(raw.resumeToken))) === email : false;
+    if (!tok && !viaLink) throw new HttpError(401, 'Please confirm your email again with a new 6-digit code – your answers are kept.', { 'account.verified': 'Please confirm your email again with a new 6-digit code – your answers are kept.' }, 'verify-again');
     const parsed = makeJoinSchemas(settings, today).application.safeParse({ ...raw, account: { email, verified: true } });
     if (!parsed.success) throw new HttpError(422, 'Some answers need a look.', fieldErrors(parsed.error));
     const a = parsed.data;
@@ -102,16 +115,23 @@ export const WEBSITE_ROUTES: Route[] = [
     const price = priceFor(plan, { start: today, years: a.plan.years, saleYear: settings.year });
     const total = checkoutTotal(config, { label: `${plan.name} membership`, kind: 'dues', priceCents: price.totalCents, planId: plan.id, method: method as PayMethod, coverFees: co.coverFees === true, code: co.discountCode, today });
     if (!total.codeOk) throw new HttpError(422, total.codeMessage ?? 'That code does not work.', { 'payment.code': total.codeMessage });
-    const existing = await one<{ id: string; status: string }>(ctx.db, API(ctx), `SELECT id, status FROM app.members WHERE lower(email) = $1 ORDER BY (archived IS NULL) DESC LIMIT 1`, [email]);
-    if (existing && existing.status !== 'archived') { const msg = existing.status === 'pending' ? 'An application with this email is already waiting for approval – we will email you when it is reviewed.' : 'You are already a member – sign in to renew.'; throw new HttpError(409, msg, { 'account.email': msg }); }   // the detail is field messages – never the member number
+    const existing = await one<{ id: string; status: string; stage: string }>(ctx.db, API(ctx), `SELECT id, status, coalesce(record->>'joinStage', '') AS stage FROM app.members WHERE lower(email) = $1 AND archived IS NULL ORDER BY (status <> 'pending') DESC, created_at DESC LIMIT 1`, [email]);
+    const reuse = existing && existing.status === 'pending' && existing.stage === 'incomplete' ? existing.id : null;   // the record made when they started (or an import): it becomes the application
+    if (existing && !reuse) { const msg = existing.status === 'pending' ? 'An application with this email is already waiting for approval – we will email you when it is reviewed.' : 'You are already a member – sign in to renew.'; throw new HttpError(409, msg, { 'account.email': msg }); }   // the detail is field messages – never the member number
 
     const appId = (await one<{ id: string }>(ctx.db, API(ctx), `SELECT 'APP-' || $2::text || '-' || lpad(app.next_no($1::uuid, 'application-' || $2::text, 4001)::text, 5, '0') AS id`, [ctx.orgId, settings.year]))!.id;
-    const memberId = (await one<{ id: string }>(ctx.db, API(ctx), `SELECT app.next_member_id($1::uuid, $2) AS id`, [ctx.orgId, ctx.slug.slice(0, 3).toUpperCase()]))!.id;
+    const memberId = reuse ?? (await one<{ id: string }>(ctx.db, API(ctx), `SELECT app.next_member_id($1::uuid, $2) AS id`, [ctx.orgId, ctx.slug.slice(0, 3).toUpperCase()]))!.id;
     const offline = method === 'check' || method === 'cash' || method === 'payLater';
     const payStatus = !total.needsPayment ? '' : method === 'check' && config.payments.checkPendingStatus ? 'check_pending' : 'pending';
     const v = (k: 'pledgeVersion' | 'emailConsentVersion' | 'smsConsentVersion' | 'identityConsentVersion') => String(a[k] ?? '');
     const stmts: Statement[] = [
-      { sql: `INSERT INTO app.members (org_id, id, first_name, middle_name, last_name, preferred_name, email, phone, dob, street, city, state, zip, plan, joined_year, applied_on, commitment, source, extra, record)
+      { sql: reuse
+          ? `UPDATE app.members SET first_name = $3, middle_name = $4, last_name = $5, preferred_name = $6, email = $7, phone = $8, dob = $9::date, street = $10, city = $11, state = $12, zip = $13, plan = $14,
+               joined_year = $15::int, applied_on = $16::date, commitment = $17, extra = extra || $18::jsonb,
+               record = (record - 'joinStage') || jsonb_build_object('payer', $19::jsonb->'payer', 'audit', coalesce(record->'audit', '[]'::jsonb) || ($19::jsonb->'audit'),
+                 'join', (coalesce(record->'join', '{}'::jsonb) - 'draft') || jsonb_build_object('step', 'done', 'finishedAt', now()))
+             WHERE org_id = $1::uuid AND id = $2 RETURNING id, center, zone`
+          : `INSERT INTO app.members (org_id, id, first_name, middle_name, last_name, preferred_name, email, phone, dob, street, city, state, zip, plan, joined_year, applied_on, commitment, source, extra, record)
           VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::date, $10, $11, $12, $13, $14, $15::int, $16::date, $17, 'website', $18::jsonb, $19::jsonb) RETURNING id, center, zone`,
         params: [ctx.orgId, memberId, a.about.firstName, a.about.middleName ?? '', a.about.lastName, a.about.preferredName ?? '', email, fmtPhone(a.about.phone), a.about.dob, [a.about.street, a.about.unit].filter(Boolean).join(' '), a.about.city, a.about.state, a.about.zip.slice(0, 5), plan.id, yearOf(today), today,
           (a.pledge.commitments[0] as string) && ['programs', 'contribution', 'volunteer'].includes(a.pledge.commitments[0] as string) ? a.pledge.commitments[0] : 'programs', custom.answers,
@@ -122,7 +142,9 @@ export const WEBSITE_ROUTES: Route[] = [
       ...([['pledge', 'pledgeVersion'], ['email', 'emailConsentVersion'], ['sms', 'smsConsentVersion'], ['identity', 'identityConsentVersion']] as const).filter(([, k]) => v(k)).map(([kind, k]) => ({
         sql: `INSERT INTO app.consents (org_id, member_id, email, kind, version, ip, source) VALUES ($1::uuid, $2, $3, $4, $5, NULLIF($6, '')::inet, 'join-form')`,
         params: [ctx.orgId, memberId, email, kind, v(k), ctx.req.ip ?? ''] })),
-      { sql: `UPDATE platform.login_codes SET used_at = now() WHERE id = $1::uuid`, params: [tok.id] },
+      ...(tok ? [{ sql: `UPDATE platform.login_codes SET used_at = now() WHERE id = $1::uuid`, params: [tok.id] }] : []),
+      // the saved-application links are done with once it is sent
+      { sql: `UPDATE platform.login_codes SET used_at = now() WHERE purpose = 'join-resume' AND org_id = $1 AND address = $2 AND used_at IS NULL`, params: [ctx.orgId, email] },
     ];
     if (plan.category === 'household' && a.plan.spouse?.firstName) stmts.push({ sql: `INSERT INTO app.relationships (org_id, member_id, relation, related_name) VALUES ($1::uuid, $2, 'spouse', $3)`, params: [ctx.orgId, memberId, `${a.plan.spouse.firstName} ${a.plan.spouse.lastName ?? ''}`.trim()] });
     if (payStatus) stmts.push(...duesRows(ctx, { memberId, years: coveredYears(price.term.through, price.term.years, settings.year), totalCents: total.totalCents, method, status: payStatus, applicationId: appId, lines: total.lines, ref: appId }));

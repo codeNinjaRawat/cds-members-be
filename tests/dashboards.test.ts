@@ -38,8 +38,9 @@ const current = members.filter((m) => !m.archived && ['active', 'life'].includes
 ok(h.current === current && h.zones.reduce((s, z) => s + z.v, 0) <= current, `current members match the records (${current})`, { h: h.current, current });
 ok(h.labels.length === 12 && h.renewals.length === 12 && h.money.length === 12 && h.labels[11] === ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Number(today.slice(5, 7)) - 1], 'twelve months ending this month');
 const from = `${Number(today.slice(0, 4)) - 1}-${today.slice(5, 7)}`;
-const paid12 = members.filter((m) => !m.archived).flatMap((m) => m.payments).filter((p: any) => p.paidOn.slice(0, 7) > from && p.paidOn.slice(0, 10) <= today).length;
-ok(h.renewals.reduce((a, b) => a + b, 0) === paid12, `renewals are the recorded dues payments of the last 12 months (${paid12})`, h.renewals);
+// a renewal = dues from someone who had paid before (a new member's first dues are not a renewal)
+const paid12 = members.filter((m) => !m.archived).flatMap((m) => { const first = m.payments.reduce((a: string, p: any) => (!a || p.paidOn < a ? p.paidOn : a), ''); return m.payments.filter((p: any) => p.paidOn !== first); }).filter((p: any) => p.paidOn.slice(0, 7) > from && p.paidOn.slice(0, 10) <= today).length;
+ok(h.renewals.reduce((a, b) => a + b, 0) === paid12, `renewals are the dues of returning members in the last 12 months (${paid12})`, h.renewals);
 ok(h.dates.recordDate === ms.recordDate.slice(0, 10) && h.votingYear === Number(ms.recordDate.slice(0, 4)), `key dates from Membership settings (${h.dates.recordDate})`);
 ok(h.pipeline[0].n >= h.pipeline[3].n && h.voters <= h.current, 'pipeline and voters add up');
 
