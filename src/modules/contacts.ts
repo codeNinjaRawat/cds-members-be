@@ -20,7 +20,7 @@ const UUID = /^[0-9a-f-]{36}$/;
 const PER_IP_15MIN = () => Number(process.env.CONTACTS_PER_IP ?? 30);
 
 type Row = { id: string; masjid_id: string | null; first_name: string; last_name: string; email: string; phone: string; source: string; note: string; created_at: string; last_seen_at: string; member_id: string | null };
-const SELECT = `SELECT c.id, k.code AS masjid_id, c.first_name, c.last_name, c.email::text, c.phone, c.source, c.note, c.created_at::text, c.last_seen_at::text,
+const SELECT = `SELECT c.id, k.code AS masjid_id, c.first_name, c.last_name, c.email::text, c.phone, c.source, c.note, to_json(c.created_at)#>>'{}' AS created_at, to_json(c.last_seen_at)#>>'{}' AS last_seen_at,
   (SELECT m.id FROM app.members m WHERE m.org_id = c.org_id AND lower(m.email::text) = lower(c.email::text) AND m.archived IS NULL ORDER BY m.approved_on DESC NULLS LAST LIMIT 1) AS member_id
   FROM app.contacts c LEFT JOIN app.centers k ON k.org_id = c.org_id AND k.id = c.center_id`;
 const shape = (r: Row) => ({ contactId: r.id, masjidId: r.masjid_id, firstName: r.first_name, lastName: r.last_name, email: r.email, phone: r.phone, source: r.source, note: r.note, createdAt: r.created_at, lastSeenAt: r.last_seen_at, memberId: r.member_id });

@@ -26,6 +26,7 @@ import { HttpError, PLATFORM, audit, document, inner, need, needMember, orgTz, r
 import { checkCode, devCodes, event, IP_CODES, locked, lookup, normalize, sendCode, signInSettings } from '../auth/routes.js';
 import { newToken, sha256hex, signLink } from '../auth/crypto.js';
 import { electionYear } from './site.js';
+import { registrationsByEmail } from './events.js';
 import { donationSettings } from './giving.js';
 import { MembershipSettingsSchema, mockMembershipSettings, DEFAULT_LIFECYCLE, type Plan } from '@/lib/content/membership';
 import { priceFor, canRenew } from '@/lib/content/renewal';
@@ -151,9 +152,12 @@ async function viewer(ctx: Ctx): Promise<E.Viewer> {
   return { signedIn: true, planId: m?.plan, groupIds: g.map((x) => x.group_id) };
 }
 /** The visitor behind a request without a token: `contactId` in the body → app.contacts (see contacts.ts). */
+async function contactOf(ctx: Ctx): Promise<{ first_name: string; last_name: string; email: string; phone: string } | null> {
+  const id = String(body(ctx).contactId ?? ctx.req.query.get('contactId') ?? '');
+  return /^[0-9a-f-]{36}$/.test(id) ? one<{ first_name: string; last_name: string; email: string; phone: string }>(ctx.db, API(ctx), 'SELECT first_name, last_name, email::text, phone FROM app.contacts WHERE id = $1::uuid', [id]) : null;
+}
 async function visitorOf(ctx: Ctx): Promise<{ first_name: string; last_name: string; email: string; phone: string | null }> {
-  const id = String(body(ctx).contactId ?? '');
-  const c = /^[0-9a-f-]{36}$/.test(id) ? await one<{ first_name: string; last_name: string; email: string; phone: string }>(ctx.db, API(ctx), 'SELECT first_name, last_name, email::text, phone FROM app.contacts WHERE id = $1::uuid', [id]) : null;
+  const c = await contactOf(ctx);
   if (!c) throw new HttpError(401, 'Tell us who you are first (My masjid), or sign in.', undefined, 'sign-in');
   return c;
 }
@@ -176,7 +180,10 @@ async function eventsFor(ctx: Ctx) {
   if (!ctx.memberId) {
     const list = await inner<{ events: E.EventItem[] }>(ctx, 'GET', '/public/events');
     const v: E.Viewer = { signedIn: false, groupIds: [] };
-    return { events: list.events.filter((e) => E.canSee(e, v)), regs: [] as Reg[], v, now: nowLocal() };
+    // a visitor with a contact (?contactId= or in the body) sees their own registrations too
+    const c = await contactOf(ctx);
+    const regs = c ? ((await registrationsByEmail(ctx, c.email)) as unknown as Reg[]) : [];
+    return { events: list.events.filter((e) => E.canSee(e, v)), regs, v, now: nowLocal() };
   }
   const [list, regs, v] = await Promise.all([inner<{ events: E.EventItem[] }>(ctx, 'GET', '/public/events'), inner<{ registrations: Reg[] }>(ctx, 'GET', '/member/events/registrations'), viewer(ctx)]);
   return { events: list.events, regs: regs.registrations, v, now: nowLocal() };
@@ -537,9 +544,7 @@ export const APP_ROUTES: Route[] = [
     const co = r.status === 'pending-payment' && r.totalCents > 0 ? await inner<{ url: string }>(ctx, 'POST', '/public/checkout', { kind: 'event', ref: r.ref, token: r.manageToken }) : null;
     if (ctx.memberId) await notifyMember(ctx, ctx.memberId, { kind: 'events', title: r.status === 'waitlisted' ? `Waitlist: ${x.e.title}` : `Registered: ${x.e.title}`, body: `Reference ${r.ref}.`, link: `/events/${x.e.id}` });
     const after = await oneEvent(ctx, mm[1]);
-    // a visitor's registration is not on a member record: answer the state from what was just created
-    const item = ctx.memberId ? after.item : { ...after.item, registration: { ...after.item.registration, status: r.status === 'waitlisted' ? 'waitlisted' as const : 'registered' as const, seats, ticket: r.ref, qr: r.ref } };
-    return ok({ ...item, checkoutUrl: co?.url ?? null }, 201);
+    return ok({ ...after.item, checkoutUrl: co?.url ?? null }, 201);
   })),
   route('POST', /^\/app\/events\/([a-z0-9-]{2,80})\/cancel$/, once(async (ctx, mm) => {
     const x = await oneEvent(ctx, mm[1]); const r = x.regs.find((y) => y.eventId === x.e.id && ['confirmed', 'pending-payment', 'waitlist'].includes(y.status));

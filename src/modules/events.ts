@@ -170,6 +170,12 @@ async function regById(ctx: Ctx, id: string) { const r = await one<RegRow>(ctx.d
 
 /* ---------------- routes ---------------- */
 const EID = '([a-z0-9-]{2,80})';
+/** A visitor's registrations (the member app, no account): matched by the email of the contact they left. */
+export async function registrationsByEmail(ctx: Ctx, email: string) {
+  const doc = await eventsDoc(ctx);
+  const list = (await rows(ctx.db, API(ctx), `${REG_SQL} WHERE r.member_id IS NULL AND lower(r.email::text) = lower($1) ORDER BY r.created_at DESC`, [email])) as RegRow[];
+  return list.map((r) => { const e = doc.events.find((x) => x.id === r.event_id); return { ...regView(r, e), cancel: e && ['confirmed', 'pending-payment', 'waitlist'].includes(r.status) ? E.refundFor(e, r.paid_cents, nowMin()) : null }; });
+}
 export const EVENT_ROUTES: Route[] = [
   route('GET', /^\/public\/events$/, async (ctx) => {
     const doc = await eventsDoc(ctx); if (!doc.enabled) return { status: 200, body: { enabled: false, showPast: false, events: [] } };

@@ -20,7 +20,7 @@ const email = `visitor.${Date.now()}@example.com`;
 const masjid = await one<{ code: string }>(db, OWNER, `SELECT code FROM app.centers WHERE org_id = (SELECT id FROM platform.organizations WHERE slug = 'isgh') AND active ORDER BY sort, name LIMIT 1`);
 
 const bad = await call('POST', '/app/contacts', { firstName: 'A', lastName: 'Alam', email: 'nope', phone: '123' });
-ok(bad.status === 422 && bad.body.detail?.firstName && bad.body.detail?.email && bad.body.detail?.phone, 'every field is checked', bad.body);
+ok(bad.status === 422 && bad.body.fields?.firstName && bad.body.fields?.email && bad.body.fields?.phone, 'every field is checked', bad.body);
 const c1 = await call('POST', '/app/contacts', { masjidId: masjid!.code, firstName: 'Akhter', lastName: 'Alam', email: email.toUpperCase(), phone: '(713) 555-0101' });
 ok(c1.status === 201 && c1.body.contactId && c1.body.masjidId === masjid!.code && c1.body.email === email && c1.body.phone === '7135550101' && c1.body.memberId === null, 'a visitor leaves name, email and mobile', c1.body);
 const c2 = await call('POST', '/app/contacts', { firstName: 'Akhtar', lastName: 'Alam', email, phone: '7135550101' });
@@ -49,6 +49,8 @@ if (open) {
   ok((await call('POST', `/app/events/${open.id}/register`, { seats: 1 })).status === 401, 'registering without a contact asks for one');
   const reg = await call('POST', `/app/events/${open.id}/register`, { seats: 1, contactId: c1.body.contactId });
   ok(reg.status === 201 && ['registered', 'waitlisted'].includes(reg.body.registration?.status) && reg.body.registration.ticket, 'a visitor registers with their contact', reg.body);
+  const again = await call('GET', `/app/events/${open.id}?contactId=${c1.body.contactId}`);
+  ok(again.status === 200 && again.body.registration?.status !== 'none' && again.body.canRegister === false, 'and sees it next time (no second registration)', again.body);
 }
 ok((await admin('DELETE', `/admin/contacts/${c3.body.contactId}`)).body?.ok === true && (await admin('DELETE', `/admin/contacts/${c1.body.contactId}`)).body?.ok === true, 'the office can remove a contact');
 ok((await call('GET', `/app/contacts/${c1.body.contactId}`)).status === 404, 'and it is gone');

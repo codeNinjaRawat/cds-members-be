@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS app.contacts (
   created_at    timestamptz NOT NULL DEFAULT now(),
   last_seen_at  timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (org_id, id),
-  FOREIGN KEY (org_id, center_id) REFERENCES app.centers(org_id, id) ON DELETE SET NULL,
+  FOREIGN KEY (org_id, center_id) REFERENCES app.centers(org_id, id) ON DELETE SET NULL (center_id),   -- PG 15+: only the center is cleared
   CHECK (email <> ''), CHECK (phone = '' OR phone ~ '^[0-9]{10}$')
 );
 CREATE UNIQUE INDEX IF NOT EXISTS contacts_person ON app.contacts (org_id, lower(email::text), phone);
