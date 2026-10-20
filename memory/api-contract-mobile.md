@@ -48,6 +48,14 @@ Refresh tokens: `platform.app_refresh_tokens` (sha-256 only), 60 days. Phones: `
 | Check-O-Matic | `GET|PATCH /app/check-o-matic` · `POST /app/check-o-matic/pay-now` | membership rule "qualifying gifts" + the member's gifts; 404 when the rule is off |
 | Join (public) | `GET /app/join/options` · `POST /app/residency {address}` · `POST /app/join/applications` | membership settings + join form; ZIP → masjid; the website's application (joinToken from verify) → tokens for the new member + `checkoutUrl` |
 
+## Visitor mode (app branch `visitor-first`, planned 2026-10-20 – see mobile/memory/10-visitor-first-plan.md)
+The app opens without a sign-in. Public (no token, `X-Org` only): `GET /app/bootstrap`, `GET /app/prayer-times`,
+`GET /app/masjids`, `GET /app/events`, `GET /app/events/:id`, `GET /app/giving/options`, join routes, `POST /app/crashes`.
+Member routes keep refusing without a session (401) – the app's guard is convenience, the API is the lock.
+**BE change needed (step 6):** `POST /app/giving/donations` must accept a visitor: no token + `guest {name, email}` →
+gift checkout with the donor's name/email (receipt emailed; no member row). With a token, `guest` is ignored.
+**BE nicety (step 3):** `GET /app/masjids` lists the organization's main center first (sort `is_main` desc, name).
+
 ## Not yet
 - Sending push notifications (tokens are kept; `APP_PUSH=1` once a sender exists). Google sign-in in the app.
 - Year-end statements (PDF) – `statements` stays empty until the website has them.

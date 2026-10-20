@@ -33,3 +33,5 @@
 - [ ] Pick the providers: email (Postmark / SendGrid / Resend), texts (Twilio), card payments (Stripe) – keys go in the server environment
 - [ ] Stripe Billing for the platform's own invoices (the panel marks them paid / void today)
 - [ ] Deployment: put the API + worker on the server (Docker files ready), managed PostgreSQL, CI running deploy/test.sh
+
+- 2026-10-20: Member app plans the visitor-first flow (no sign-in). BE to-do: `POST /app/giving/donations` guest donations (name+email, no token); `GET /app/masjids` main center first. Contract section 'Visitor mode' in api-contract-mobile.md. Full integration plan: ../memory/25-member-app-integration-architecture.md.
