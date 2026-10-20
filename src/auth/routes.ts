@@ -14,7 +14,7 @@
  * Limits: 5 codes per address and 20 per IP per 15 minutes; 10 failed attempts per address per 15 minutes → locked.
  */
 import { one, rows, type Db } from '../db/sql.js';
-import { COOKIE, HttpError, PLATFORM, context, document, route, sessionOf, tenant, todayCT, twoStepRequired, type Ctx, type Req, type Res, type Route } from '../http/core.js';
+import { COOKIE, HttpError, PLATFORM, context, document, fromEdge, route, sessionOf, tenant, todayCT, twoStepRequired, type Ctx, type Req, type Res, type Route } from '../http/core.js';
 import { codeHash, e164, hashPassword, newCode, newToken, passwordProblem, sha256hex, verifyPassword } from './crypto.js';
 import { SignInSchema, dashboardsFor, mockSignIn, type Dashboard, type SignInSettings } from '@/lib/community/sign-in';
 import { OrgStructureSchema, mockOrgStructure } from '@/lib/community/org-structure';
@@ -25,6 +25,20 @@ const IP_CODES = () => (process.env.AUTH_DEV_CODES === '1' ? 1000 : Number(proce
 const DEV = () => process.env.AUTH_DEV_CODES === '1' && process.env.NODE_ENV !== 'production';
 /** AUTH_DEV_NO_LIMITS=1 (development on a PC only): no 5-codes-per-15-minutes limit and no lock-out after failed tries. */
 const NO_LIMITS = () => DEV() && process.env.AUTH_DEV_NO_LIMITS === '1';
+/**
+ * AUTH_DEV_CODES=admin-app – a shared DEV / preview server with no email provider yet: the sign-in code is shown on the
+ * ADMIN sign-in page only. The request must come through our own admin app (edge key + an address that belongs to an
+ * admin app). The public website, the member app and direct API callers never get a code. Never in production.
+ */
+async function showCodeHere(ctx: Ctx): Promise<boolean> {
+  if (DEV()) return true;
+  if (process.env.AUTH_DEV_CODES !== 'admin-app' || process.env.NODE_ENV === 'production') return false;
+  if (!fromEdge(ctx.req)) return false;
+  const host = String(ctx.req.headers['x-org-host'] ?? '').split(':')[0].toLowerCase();
+  if (!host) return false;
+  const r = await one<{ app: string }>(ctx.db, PLATFORM, 'SELECT app FROM platform.org_for_host($1, $2)', [host, process.env.BASE_DOMAIN ?? 'nextgrow.pro']);
+  return r?.app === 'admin';
+}
 const SESSION_HOURS = 12;
 type Who = { email: string; memberId: string | null; admin: boolean };
 
@@ -156,7 +170,7 @@ export const AUTH_ROUTES: Route[] = [
     let devCode: string | undefined;
     if (who) devCode = await sendCode(ctx, channel, address, 'sign-in');
     else await event(ctx.db, { orgId: ctx.orgId, address, method: channel === 'email' ? 'email-code' : 'sms-code', ok: false, reason: 'unknown address', ip: ctx.req.ip });
-    return { status: 202, body: { sent: true, channel, expiresInMinutes: 10, message: `If ${channel === 'email' ? 'this email' : 'this number'} belongs to a member or admin here, a 6-digit code is on its way.`, ...(DEV() && devCode ? { devCode } : {}) } };
+    return { status: 202, body: { sent: true, channel, expiresInMinutes: 10, message: `If ${channel === 'email' ? 'this email' : 'this number'} belongs to a member or admin here, a 6-digit code is on its way.`, ...(devCode && await showCodeHere(ctx) ? { devCode } : {}) } };
   }),
   route('POST', /^\/auth\/code\/verify$/, async (ctx) => {
     const { channel, address } = normalize(body(ctx).address);
@@ -167,7 +181,8 @@ export const AUTH_ROUTES: Route[] = [
     return startSession(ctx, who, channel === 'email' ? 'email-code' : 'sms-code');
   }),
   route('POST', /^\/auth\/password$/, async (ctx) => {
-    const s = await settingsOf(ctx.db, ctx.orgId); if (!s.methods.password) throw new HttpError(400, 'Passwords are switched off here – use a code.');
+    // AUTH_PASSWORDS=on: passwords allowed even while the organization's sign-in settings have them off (a server with no email yet)
+    const s = await settingsOf(ctx.db, ctx.orgId); if (!s.methods.password && process.env.AUTH_PASSWORDS !== 'on') throw new HttpError(400, 'Passwords are switched off here – use a code.');
     const { address } = normalize(body(ctx).email); const pw = String(body(ctx).password ?? '');
     if (await locked(ctx.db, address)) throw new HttpError(429, 'Too many tries. Wait 15 minutes and try again.', undefined, 'locked');
     const row = await one<{ hash: string }>(ctx.db, PLATFORM, 'SELECT p.hash FROM platform.passwords p JOIN platform.users u ON u.id = p.user_id WHERE u.email = $1', [address]);
@@ -210,7 +225,7 @@ export const AUTH_ROUTES: Route[] = [
   route('POST', /^\/auth\/two-step\/start$/, async (ctx) => {
     const s = await signedIn(ctx);
     const devCode = await sendCode(ctx, 'email', s.email, 'two-step');
-    return { status: 202, body: { sent: true, channel: 'email', ...(DEV() ? { devCode } : {}) } };
+    return { status: 202, body: { sent: true, channel: 'email', ...(await showCodeHere(ctx) ? { devCode } : {}) } };
   }),
   route('POST', /^\/auth\/two-step\/verify$/, async (ctx) => {
     const s = await signedIn(ctx);

@@ -18,6 +18,16 @@ export async function ensureOrg(db: Db, slug: string, name: string, founding = f
   if (slug === 'isgh') await db.run(OWNER, [{ sql: `UPDATE platform.organizations SET member_prefix = 'HOU' WHERE id = $1::uuid AND member_prefix = ''`, params: [made!.id] }]);
   return made!.id;
 }
+/** The founding organization's own website/admin addresses (SEED_WEB_HOST / SEED_ADMIN_HOST, e.g. member-web.nextgrow.pro):
+ *  without them the API cannot tell which organization those addresses belong to ("No organization …").
+ *  Only fills empty values – an address set in the SaaS panel is never overwritten. Nothing hard-coded. */
+export async function linkHosts(db: Db, orgId: string, web = process.env.SEED_WEB_HOST, admin = process.env.SEED_ADMIN_HOST) {
+  const stmts = [];
+  if (web) stmts.push({ sql: 'UPDATE platform.organizations SET legacy_web_host = lower($2) WHERE id = $1::uuid AND legacy_web_host IS NULL', params: [orgId, web.trim()] });
+  if (admin) stmts.push({ sql: 'UPDATE platform.organizations SET legacy_admin_host = lower($2) WHERE id = $1::uuid AND legacy_admin_host IS NULL', params: [orgId, admin.trim()] });
+  if (stmts.length) await db.run(OWNER, stmts);
+  return stmts.length;
+}
 
 export async function seedDocuments(db: Db, orgId: string) {
   // one transaction for all documents (one round trip each statement, not five)
@@ -65,6 +75,7 @@ export async function seedMembers(db: Db, orgId: string, list = demoMembers()) {
 export async function seed() {
   const db = openDb();
   const org = await ensureOrg(db, 'isgh', 'Islamic Society of Greater Houston', true);
+  await linkHosts(db, org);
   const docs = await seedDocuments(db, org);
   // once real records are imported (npm run import:wa), the demo members are not added back
   const real = await one<{ n: number }>(db, { org, role: 'app_platform' }, `SELECT count(*)::int AS n FROM app.members WHERE external_ids ? 'wildapricot' OR source = 'import'`);

@@ -52,7 +52,14 @@ export async function tenant(db: Db, req: Req): Promise<{ orgId: string; slug: s
   // on a PC (LOCALHOST_ORG in BE/.env), plain http://localhost:3000 / :3001 opens that organization – never in production
   if (!org && !viaHeader && process.env.LOCALHOST_ORG && /^(localhost|127\.0\.0\.1)$/.test(host) && process.env.NODE_ENV !== 'production')
     org = await one(db, PLATFORM, 'SELECT id, slug, status, timezone FROM platform.organizations WHERE slug = $1', [process.env.LOCALHOST_ORG]);
-  if (!org) throw new HttpError(404, `No organization “${viaHeader || host}”.`);
+  if (!org) {
+    // our own website/admin always send x-edge-key: say plainly when the keys do not match instead of "No organization 127.0.0.1"
+    if (process.env.TENANT_FROM_HOST === '1' && !trusted && typeof req.headers['x-edge-key'] === 'string')
+      throw new HttpError(503, 'The website/admin key (MS_EDGE_KEY) does not match the API key (EDGE_KEY in BE/.env) – make them identical and restart the API and the app.');
+    if (process.env.TENANT_FROM_HOST === '1' && !trusted && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(host))
+      throw new HttpError(503, 'The website/admin called the API without MS_EDGE_KEY – set MS_EDGE_KEY (= EDGE_KEY in BE/.env) in its .env and restart it.');
+    throw new HttpError(404, `No organization “${viaHeader || host}” – the address is not linked to an organization (SaaS panel › Domains, or the founding organization's website/admin address).`);
+  }
   if (org.status === 'suspended' || org.status === 'cancelled') throw new HttpError(423, 'This organization is paused.');
   return { orgId: org.id, slug: org.slug, status: org.status, timezone: org.timezone };
 }
@@ -125,6 +132,8 @@ export async function context(db: Db, req: Req): Promise<Ctx> {
 }
 /** Two-step is required for this admin by the organization's rule (sensitive permissions, everyone, or nobody). */
 export function twoStepRequired(access: AccessDoc, a: AdminUser): boolean {
+  // AUTH_TWO_STEP=off: no emailed second code (a DEV server with no email provider) – ignored in production
+  if (process.env.AUTH_TWO_STEP === 'off' && process.env.NODE_ENV !== 'production') return false;
   if (access.requireTwoStepFor === 'none') return false;
   if (access.requireTwoStepFor === 'everyone') return true;
   const r = roleOf(access, a);

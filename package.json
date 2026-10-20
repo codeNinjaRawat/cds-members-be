@@ -36,7 +36,8 @@
     "server-dev:admins": "node --import tsx --import ./src/load-env.ts src/db/admins.ts --env=server-dev",
     "server-dev:test-sql": "node --import tsx --import ./src/load-env.ts src/db/sql-tests.ts --env=server-dev",
     "dev:server-db": "node --import tsx --import ./src/load-env.ts --watch src/http/server.ts --env=server-dev",
-    "test:db-config": "tsx tests/db-config.test.ts"
+    "test:db-config": "tsx tests/db-config.test.ts",
+    "admin:password": "node --import tsx --import ./src/load-env.ts src/auth/set-password.ts"
   },
   "dependencies": {
     "pg": "^8.13.0",
