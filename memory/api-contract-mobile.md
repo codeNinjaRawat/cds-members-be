@@ -56,6 +56,12 @@ Member routes keep refusing without a session (401) – the app's guard is conve
 gift checkout with the donor's name/email (receipt emailed; no member row). With a token, `guest` is ignored.
 **BE nicety (step 3):** `GET /app/masjids` lists the organization's main center first (sort `is_main` desc, name).
 
+### Visitor contact (2026-10-20, done – src/modules/contacts.ts, migration 0034)
+`POST /app/contacts {masjidId, firstName, lastName, email, phone}` → 201 `{contactId, masjidId, firstName, lastName, email, phone, source, note, createdAt, lastSeenAt, memberId}`
+(same email + mobile again = same contact, name/masjid updated). `GET /app/contacts/:id`, `PATCH /app/contacts/:id` (any of the fields; `masjidId: ''` clears).
+Errors 422 `{message, fields}`. The app sends `contactId` with `POST /app/events/:id/register` and `?contactId=` on `GET /app/events(/:id)`.
+Admin: `GET /admin/contacts?q=&masjid=` → `{contacts, total}`; `PATCH /admin/contacts/:id {note}`; `DELETE /admin/contacts/:id`.
+
 ## Not yet
 - Sending push notifications (tokens are kept; `APP_PUSH=1` once a sender exists). Google sign-in in the app.
 - Year-end statements (PDF) – `statements` stays empty until the website has them.
