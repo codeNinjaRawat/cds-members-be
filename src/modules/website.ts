@@ -52,8 +52,11 @@ export const WEBSITE_ROUTES: Route[] = [
     const email = String(body(ctx).email ?? '').trim().toLowerCase();
     if (!z.string().email().safeParse(email).success) throw new HttpError(400, 'Enter a valid email address, like name@example.com.');
     const recent = await one<{ n: number }>(ctx.db, PLATFORM, `SELECT count(*)::int AS n FROM platform.login_codes WHERE address = $1 AND created_at > now() - interval '15 minutes'`, [email]);
-    if ((recent?.n ?? 0) >= 5) throw new HttpError(429, 'Too many codes asked for. Wait 15 minutes and try again.');
-    const code = newCode();
+    // development only (AUTH_DEV_CODES=1, never in production): same switches as the admin sign-in – AUTH_DEV_NO_LIMITS and AUTH_DEV_FIXED_CODE
+    const dev = process.env.AUTH_DEV_CODES === '1' && process.env.NODE_ENV !== 'production';
+    if ((recent?.n ?? 0) >= (dev && process.env.AUTH_DEV_NO_LIMITS === '1' ? 1000 : 5)) throw new HttpError(429, 'Too many codes asked for. Wait 15 minutes and try again.');
+    const fixed = process.env.AUTH_DEV_FIXED_CODE ?? '';
+    const code = dev && /^\d{6}$/.test(fixed) ? fixed : newCode();
     await ctx.db.run(PLATFORM, [
       { sql: `INSERT INTO platform.login_codes (org_id, channel, address, purpose, code_hash, ip) VALUES ($1, 'email', $2, 'join', decode($3, 'hex'), NULLIF($4, '')::inet)`, params: [ctx.orgId, email, codeHash(email, code), ctx.req.ip ?? ''] },
       { sql: `INSERT INTO platform.outbox (org_id, channel, to_address, subject, body, kind) VALUES ($1, 'email', $2, $3, $4, 'join-code')`, params: [ctx.orgId, email, `${code} is your code to join`, `Assalamu alaikum,\n\nYour code to continue your membership application is ${code}. It works for 10 minutes.`] },
