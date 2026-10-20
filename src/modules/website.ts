@@ -116,7 +116,12 @@ export const WEBSITE_ROUTES: Route[] = [
     // "pay for family members" (plan.familyMembers): other adults of the household, each their own record and dues
     const fam = plan.familyMembers ? (a.plan.members ?? []) : [];
     const famEach = plan.familyMembers ? plan.familyMembers.perMemberCents * price.term.years : 0;
-    const total = checkoutTotal(config, { label: fam.length ? `${plan.name} membership + ${fam.length} family member${fam.length > 1 ? 's' : ''}` : `${plan.name} membership`, kind: 'dues', priceCents: price.totalCents + famEach * fam.length, planId: plan.id, method: method as PayMethod, coverFees: co.coverFees === true, code: co.discountCode, today });
+    // monthly plans: the amount the person chose (the schema already checked it is at least the plan's minimum) and the fund
+    const monthly = plan.term === 'recurring' ? Math.max(plan.priceCents, a.plan.monthlyCents ?? plan.priceCents) : 0;
+    const fund = plan.term === 'recurring' && plan.fundChoices?.length ? String(a.plan.fund ?? '') : '';
+    const label = plan.term === 'recurring' ? `${plan.name} – $${(monthly / 100).toFixed(2)} per month${fund ? ` to ${fund}` : ''}`
+      : fam.length ? `${plan.name} membership + ${fam.length} family member${fam.length > 1 ? 's' : ''}` : `${plan.name} membership`;
+    const total = checkoutTotal(config, { label, kind: 'dues', priceCents: plan.term === 'recurring' ? monthly : price.totalCents + famEach * fam.length, planId: plan.id, method: method as PayMethod, coverFees: co.coverFees === true, code: co.discountCode, today });
     if (!total.codeOk) throw new HttpError(422, total.codeMessage ?? 'That code does not work.', { 'payment.code': total.codeMessage });
     const existing = await one<{ id: string; status: string; stage: string }>(ctx.db, API(ctx), `SELECT id, status, coalesce(record->>'joinStage', '') AS stage FROM app.members WHERE lower(email) = $1 AND archived IS NULL ORDER BY (status <> 'pending') DESC, created_at DESC LIMIT 1`, [email]);
     const reuse = existing && existing.status === 'pending' && existing.stage === 'incomplete' ? existing.id : null;

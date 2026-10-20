@@ -84,6 +84,25 @@ ok(ev2.status === 200 && ev2.body.alreadyApplied?.applicationId === sub.body.app
   await call('PUT', '/admin/documents/membership-settings', { data: ms.body.data, note: 'back' }, 'owner');
 }
 
+/* ---------- J7: monthly plan – the person picks the amount (at least the minimum) and the fund ---------- */
+{
+  const ms = await call('GET', '/admin/documents/membership-settings', undefined, 'owner');
+  const data = structuredClone(ms.body.data);
+  data.plans = data.plans.map((p: any) => (p.id === 'monthly' ? { ...p, visible: true, priceCents: 1000, fundChoices: ['Masjid fund', 'Education'], note: 'Dues of $20 per member must be paid by June 30.' } : p));
+  const mplan = data.plans.find((p: any) => p.id === 'monthly'); ok(mplan?.term === 'recurring', `the test plan "monthly" is monthly (${mplan?.term}, ${mplan?.category}, ${mplan?.memberClass})`);
+  const put = await call('PUT', '/admin/documents/membership-settings', { data, note: 'monthly plan' }, 'owner');
+  ok(put.status === 200, `monthly plan with fund choices saved (${put.status} ${JSON.stringify(put.body?.detail ?? '').slice(0, 200)})`);
+  const me = 'monthly.giver@example.org';
+  const mc = (await call('POST', '/public/join/email/start', { email: me })).body.devCode;
+  const mv = await call('POST', '/public/join/email/verify', { email: me, code: mc });
+  const base = app({ account: { email: me, verified: true }, about: { ...app().about, firstName: 'Mona', lastName: 'Giver', phone: '(713) 555-0181' }, pledge: { ...app().pledge, signature: 'Mona Giver' } });
+  const low = await call('POST', '/public/membership/applications', { ...base, plan: { ...base.plan, planId: 'monthly', memberClass: mplan.memberClass, monthlyCents: 500, fund: 'Zakat' }, joinToken: mv.body.joinToken });
+  ok(low.status === 422 && low.body.detail['plan.monthlyCents'] && low.body.detail['plan.fund'], `below the minimum / unknown fund refused (${JSON.stringify(low.body.detail)})`);
+  const gm = await call('POST', '/public/membership/applications', { ...base, plan: { ...base.plan, planId: 'monthly', memberClass: mplan.memberClass, monthlyCents: 2500, fund: 'Education', spouse: mplan.category === 'household' ? { firstName: 'Sam', lastName: 'Giver', email: 'sam.giver@example.org' } : undefined }, custom: { 'spouse-same-address': 'yes' }, joinToken: mv.body.joinToken });
+  ok(gm.status === 201 && gm.body.amountCents === 2500 && JSON.stringify(gm.body.lines).includes('Education'), `chosen amount charged, fund on the receipt line (${gm.status} ${JSON.stringify(gm.body?.detail ?? gm.body?.amountCents)})`);
+  await call('PUT', '/admin/documents/membership-settings', { data: ms.body.data, note: 'back' }, 'owner');
+}
+
 /* ---------- drafts: nothing typed is lost; the office sees who stopped ---------- */
 {
   const half = 'half.way@example.org';
