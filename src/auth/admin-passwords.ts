@@ -6,7 +6,8 @@
  *   npm run admin:passwords -- --reset      → new random passwords for everyone
  *   npm run server-dev:admin-passwords      → the same against the DEV database (the file stays on this PC)
  * The file is git-ignored and never leaves the machine it is made on. The database keeps only scrypt hashes.
- * Refused when NODE_ENV=production – real people set their own password. Delete the file when that time comes.
+ * Refused on a production database (NODE_ENV=production and a database not named *_dev / *_test / *_staging) – real
+ * people set their own password. Delete the file when that time comes.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { openDb, rows, type Db } from '../db/sql.js';
@@ -58,7 +59,10 @@ export async function syncAdminPasswords(db: Db, opts: { reset?: boolean } = {})
 const dbName = () => { try { const u = new URL(process.env.DATABASE_URL ?? ''); return `${decodeURIComponent(u.pathname.slice(1))} on ${u.hostname || 'localhost'}`; } catch { return ''; } };
 
 if (process.argv[1] && /admin-passwords\.ts$/.test(process.argv[1])) {
-  if (process.env.NODE_ENV === 'production') { console.error('Not on a production server – people set their own passwords there (npm run admin:password -- email for one person).'); process.exit(1); }
+  // a production-mode process is refused – unless its database is plainly a development one (membership_dev, *_test,
+  // *_staging): the DEV server runs NODE_ENV=production but holds no real sign-ins yet
+  const dbn = (() => { try { return decodeURIComponent(new URL(process.env.DATABASE_URL ?? '').pathname.slice(1)); } catch { return ''; } })();
+  if (process.env.NODE_ENV === 'production' && !/_(dev|test|staging)$/i.test(dbn)) { console.error(`Not on a production database ("${dbn || '?'}") – people set their own passwords there (npm run admin:password -- email for one person).`); process.exit(1); }
   const db = openDb();
   syncAdminPasswords(db, { reset: process.argv.includes('--reset') })
     .then((r) => { console.log(`Admin passwords: ${r.total} admins · ${r.made} new · ${r.kept} kept from the file · ${r.applied} applied to ${dbName()}.`); console.log(`Open BE/admin-passwords.json to see them (git-ignored – never commit or share it).`); })
