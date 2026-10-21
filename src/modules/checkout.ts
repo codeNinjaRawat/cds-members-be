@@ -23,6 +23,7 @@ import { donationSettings } from './giving.js';
 import { systemContext } from '../jobs/runner.js';
 import * as D from '@/lib/community/donations';
 import * as F from '@/lib/community/fundraising';
+import { touchPerson } from './contacts.js';
 import { siteOf } from './join-drafts.js';
 
 const API = (ctx: Ctx) => ({ org: ctx.orgId, role: 'app_api' as const });
@@ -164,6 +165,7 @@ async function apply(ctx: Ctx, it: Intent, pref: string, paidCents: number) {
     await ctx.db.run(API(ctx), [{ sql: `INSERT INTO app.donations (org_id, id, donor_name, donor_email, member_id, anonymous, show_name, fund_id, center_id, campaign_id, page_id, amount_cents, given_on, method, platform, platform_ref, state, entered_by, source, monthly)
       VALUES ($1::uuid, $2, $3, $4, NULLIF($5, ''), $6::boolean, $7::boolean, $8, (SELECT id FROM app.centers WHERE name = $9), NULLIF($10, ''), NULLIF($11, ''), $12::bigint, current_date, 'card', 'stripe', $13, 'awaiting-payout', 'Website', 'online', $14::boolean)`,
       params: [ctx.orgId, id, g.name, g.email, member?.id ?? '', g.anonymous, g.showName, g.fund, g.center, g.campaignId, g.pageId, paidCents, pref, g.monthly] }]);
+    await touchPerson(ctx, { firstName: g.name.split(' ')[0] ?? g.name, lastName: g.name.split(' ').slice(1).join(' '), email: g.email, source: 'donation', memberId: member?.id ?? null, gaveAt: new Date().toISOString() });   // People: a donor
     // the thank-you right away; the written receipt (IRS) when the amount asks for it
     const big = paidCents >= s.receiptAboveCents && !g.anonymous;
     const no = big ? `R-${todayCT().slice(0, 4)}-${String((await one<{ n: string }>(ctx.db, API(ctx), `SELECT app.next_no($1::uuid, $2, 1)::text AS n`, [ctx.orgId, `receipt-${todayCT().slice(0, 4)}`]))!.n).padStart(5, '0')}` : '';

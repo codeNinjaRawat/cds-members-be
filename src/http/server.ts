@@ -45,9 +45,9 @@ import { DOCUMENT_ROUTES } from '../modules/documents.js';
 import { RECORD_ROUTES } from '../modules/records-admin.js';
 import { MEMBER_EXTRA_ROUTES } from '../modules/member-extras.js';
 import { APP_ROUTES } from '../modules/app.js';
-import { CONTACT_ROUTES } from '../modules/contacts.js';
+import { CONTACT_ROUTES, PEOPLE_ROUTES } from '../modules/contacts.js';
 /** Route modules (B1 onward). The legacy routes below stay until each moves into its module. */
-export const ROUTES: Route[] = [...AUTH_ROUTES, ...DOCUMENT_ROUTES, ...JOIN_DRAFT_ROUTES, ...MEMBER_ROUTES, ...WEBSITE_ROUTES, ...HELPDESK_ROUTES, ...TASK_ROUTES, ...EVENT_ROUTES, ...GIVING_ROUTES, ...FINANCE_ROUTES, ...ZAKAT_ROUTES, ...GOVERNANCE_ROUTES, ...COMMS_ROUTES, ...CHECKOUT_ROUTES, ...ORG_PLATFORM_ROUTES, ...FILE_ROUTES, ...SITE_ROUTES, ...RECORD_ROUTES, ...MEMBER_EXTRA_ROUTES, ...APP_ROUTES, ...CONTACT_ROUTES];
+export const ROUTES: Route[] = [...AUTH_ROUTES, ...DOCUMENT_ROUTES, ...JOIN_DRAFT_ROUTES, ...MEMBER_ROUTES, ...WEBSITE_ROUTES, ...HELPDESK_ROUTES, ...TASK_ROUTES, ...EVENT_ROUTES, ...GIVING_ROUTES, ...FINANCE_ROUTES, ...ZAKAT_ROUTES, ...GOVERNANCE_ROUTES, ...COMMS_ROUTES, ...CHECKOUT_ROUTES, ...ORG_PLATFORM_ROUTES, ...FILE_ROUTES, ...SITE_ROUTES, ...RECORD_ROUTES, ...MEMBER_EXTRA_ROUTES, ...APP_ROUTES, ...CONTACT_ROUTES, ...PEOPLE_ROUTES];
 setRoutes(ROUTES);
 
 /* ---------------- members ---------------- */

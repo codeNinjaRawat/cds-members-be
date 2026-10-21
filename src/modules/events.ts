@@ -26,6 +26,7 @@ import { localNow } from './helpdesk.js';
 import { can, inScope, roleOf } from '@/lib/community/access';
 import * as E from '@/lib/community/events';
 import { approvalChecks } from '@/lib/community/event-ops';
+import { touchPerson } from './contacts.js';
 import { OrgConfigSchema, applyDiscount } from '@/lib/community/org-config';
 
 const API = (ctx: Ctx) => ({ org: ctx.orgId, role: 'app_api' as const });
@@ -136,6 +137,7 @@ async function register(ctx: Ctx, e: E.EventItem, raw: unknown, how: { source: '
     if (k) throw new HttpError(404, 'This event is not open for registration.');
     throw err;
   }
+  await touchPerson(ctx, { firstName: b.name.split(' ')[0] ?? b.name, lastName: b.name.split(' ').slice(1).join(' '), email: b.email, phone: b.phone, source: 'event', memberId: how.viewer.memberId || null });
   const status = r!.status === 'waitlist' ? 'waitlisted' : r!.status === 'pending-payment' ? 'pending-payment' : 'registered';
   const lines = status === 'waitlisted' ? `You are number ${r!.waitlist_pos} on the waitlist for ${e.title}. We will email you if a spot opens.`
     : status === 'pending-payment' ? `Your spot at ${e.title} is held. Amount due: ${money(total)}.`

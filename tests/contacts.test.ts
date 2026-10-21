@@ -3,7 +3,7 @@
  * DATABASE_URL=… tsx tests/contacts.test.ts
  */
 export {};
-process.env.AUTH_DEV_HEADER = '1';
+process.env.AUTH_DEV_HEADER = '1'; process.env.AUTH_DEV_CODES = '1';
 const { createApi } = await import('../src/http/server.js');
 const { openDb, one } = await import('../src/db/sql.js');
 let pass = 0, fail = 0; const ok = (c: unknown, m: string, extra?: unknown) => { c ? pass++ : (fail++, console.log('FAIL', m, extra === undefined ? '' : JSON.stringify(extra).slice(0, 400))); };
@@ -54,5 +54,35 @@ if (open) {
 }
 ok((await admin('DELETE', `/admin/contacts/${c3.body.contactId}`)).body?.ok === true && (await admin('DELETE', `/admin/contacts/${c1.body.contactId}`)).body?.ok === true, 'the office can remove a contact');
 ok((await call('GET', `/app/contacts/${c1.body.contactId}`)).status === 404, 'and it is gone');
+
+
+/* People (0036): a contact becomes a member and a donor – same person, more facts */
+{
+  const pe = 'people.one@example.org';
+  const c = await call('POST', '/app/contacts', { masjidId: masjid!.code, firstName: 'Pia', lastName: 'People', email: pe, phone: '7135550177' });
+  ok(c.status === 201, 'a contact');
+  let list = await admin('GET', '/admin/people?q=people.one');
+  ok(list.status === 200 && list.body.people.length === 1 && list.body.people[0].stage === 'contact' && list.body.funnel.people >= 1, 'People list: a plain contact', list.body);
+  // the join form starts with the contact's name and mobile
+  const st = await call('POST', '/public/join/email/start', { email: pe });
+  const vr = await call('POST', '/public/join/email/verify', { email: pe, code: st.body.devCode });
+  ok(vr.status === 200 && vr.body.data?.about?.firstName === 'Pia' && vr.body.data?.about?.phone === '(713) 555-0177', 'the join form is pre-filled from the contact', vr.body);
+  // a gift → donor
+  const gift = await admin('POST', '/admin/donations', { amountCents: 5000, platform: 'cash', fund: 'general', center: 'North Islamic Center 1', name: 'Pia People', email: pe, givenOn: '2026-10-01' });
+  list = await admin('GET', '/admin/people?q=people.one');
+  ok(gift.status === 201 && list.body.people[0].stage === 'donor' && list.body.people[0].giving.count === 1 && list.body.people[0].giving.cents === 5000, `gift recorded → donor (${gift.status} ${gift.body?.error ?? ''})`, list.body.people[0]);
+  // becomes a member by hand (office) → member+donor
+  const mem = await admin('POST', '/admin/members', { first: 'Pia', last: 'People', email: pe, phone: '7135550177', zip: '77098', plan: 'single', approved: true, force: true });
+  list = await admin('GET', '/admin/people?q=people.one');
+  ok(mem.status === 201 && list.body.people[0].stage === 'member+donor' && list.body.people[0].member?.id === mem.body.id, `added as a member → member+donor (${mem.status} ${mem.body?.error ?? ''})`, list.body.people[0]);
+  const one = await admin('GET', `/admin/people/${c.body.contactId}`);
+  ok(one.status === 200 && one.body.gifts.length === 1 && one.body.member?.id === mem.body.id, 'one person: gifts and member facts', one.body);
+  const tg = await admin('PATCH', `/admin/people/${c.body.contactId}`, { tags: ['youth', 'new to Houston'] });
+  ok(tg.status === 200 && tg.body.tags.length === 2, 'tags');
+  const kinds = { contacts: (await admin('GET', '/admin/people?kind=contacts')).body.people.every((p: any) => p.stage === 'contact'), donors: (await admin('GET', '/admin/people?kind=donors')).body.people.every((p: any) => p.giving.count > 0) };
+  ok(kinds.contacts && kinds.donors, 'filters by kind', kinds);
+  const msg = await call('POST', `/admin/contacts/${c.body.contactId}/message`, { subject: 'Welcome', body: 'Assalamu alaikum' }, { 'x-admin': 'comms' });
+  ok(msg.status === 200, 'an email to a contact is queued', msg.body);
+}
 
 console.log(`contacts: ${pass} passed, ${fail} failed`); server.close(); await db.close?.(); process.exit(fail ? 1 : 0);

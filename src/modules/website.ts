@@ -27,6 +27,7 @@ import { checkoutTotal, canMove, type PayMethod, type PaymentStatus } from '@/li
 import { recordsFor, RecordsSchema, mockRecords } from '@/lib/community/records';
 import { OfficialsSchema, mockOfficials, memberPastLeadership } from '@/lib/community/officials';
 import { WorkSettingsSchema, mockWorkSettings, publicHelpdesk } from '@/lib/community/work';
+import { contactPrefill, touchPerson } from './contacts.js';
 import { emailOfResume, newResumeToken, prefillOf, startUnfinished, unfinishedOf } from './join-drafts.js';
 
 const API = (ctx: Ctx) => ({ org: ctx.orgId, role: 'app_api' as const });
@@ -89,7 +90,7 @@ export const WEBSITE_ROUTES: Route[] = [
     await ctx.db.run(PLATFORM, [used,
       { sql: `INSERT INTO platform.login_codes (org_id, channel, address, purpose, code_hash, expires_at) VALUES ($1, 'email', $2, 'verify-email', decode($3, 'hex'), now() + interval '12 hours')`, params: [ctx.orgId, email, sha256hex(token)] }]);
     const resumeToken = await newResumeToken(ctx.db, ctx.orgId, email);
-    return { status: 200, body: { joinToken: token, resumeToken, expiresInMinutes: 720, resumed: !!existing, step: draft ? String(draft.join?.step ?? 'about') : 'about', data: draft ? prefillOf(draft) : {} } };
+    return { status: 200, body: { joinToken: token, resumeToken, expiresInMinutes: 720, resumed: !!existing, step: draft ? String(draft.join?.step ?? 'about') : 'about', data: draft ? prefillOf(draft) : await contactPrefill(ctx, email) } };   // a known contact starts with their name and mobile filled in
   }),
 
   /* ---------------- join: the application ---------------- */
@@ -185,6 +186,7 @@ export const WEBSITE_ROUTES: Route[] = [
       await ctx.db.run(API(ctx), fs.filter((x) => !/platform\./.test(x.sql)));
       await ctx.db.run(PLATFORM, fs.filter((x) => /platform\./.test(x.sql)));
     }
+    await touchPerson(ctx, { firstName: a.about.firstName, lastName: a.about.lastName, email, phone: a.about.phone, source: 'website', memberId });   // People: this contact is now a member
     const placed = await one<{ center: string; zone: string; center_id: string | null }>(ctx.db, API(ctx), 'SELECT center, zone, center_id FROM app.members WHERE id = $1', [memberId]);
     // a border request: they live in one masjid's area but ask for another → a masjid-change request for the office
     if (a.about.borderRequestCenterId) await ctx.db.run(API(ctx), [{ sql: `INSERT INTO app.center_changes (org_id, member_id, from_center, to_center, reason) SELECT $1::uuid, $2, NULLIF($3, '')::uuid, id, 'Asked on the join form (lives near a border)' FROM app.centers WHERE code = $4 AND active AND id IS DISTINCT FROM NULLIF($3, '')::uuid`, params: [ctx.orgId, memberId, placed?.center_id ?? '', a.about.borderRequestCenterId] }]);

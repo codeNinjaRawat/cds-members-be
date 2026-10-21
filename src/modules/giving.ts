@@ -25,6 +25,7 @@ import { HttpError, PLATFORM, audit, document, need, route, todayCT, type Ctx, t
 import { saveDocument } from './projections.js';
 import { can, inScope, roleOf, type Permission } from '@/lib/community/access';
 import * as D from '@/lib/community/donations';
+import { touchPerson } from './contacts.js';
 import * as F from '@/lib/community/fundraising';
 
 const API = (ctx: Ctx) => ({ org: ctx.orgId, role: 'app_api' as const });
@@ -129,6 +130,7 @@ export const GIVING_ROUTES: Route[] = [
     if (b.givenOn && b.givenOn > todayCT()) throw new HttpError(422, 'The gift date is in the future.');
     if (d.donor.memberId && !(await one(ctx.db, API(ctx), 'SELECT 1 AS x FROM app.members WHERE id = $1', [d.donor.memberId]))) throw new HttpError(422, `No member ${d.donor.memberId}.`);
     await ctx.db.run(API(ctx), [saveDonation(ctx, d, c, true)]);
+    if (d.donor.email) await touchPerson(ctx, { firstName: d.donor.name.split(' ')[0] ?? '', lastName: d.donor.name.split(' ').slice(1).join(' '), email: d.donor.email, source: 'donation', memberId: d.donor.memberId || null, gaveAt: `${d.at.slice(0, 10)}T12:00:00Z` });
     if (link.pledgeId) await closePledges(ctx, c);
     await audit(ctx, 'donations', 'Gift entered', `${d.id} ${D.usd(d.amountCents)} ${d.platform} → ${d.fund}`, d.id);
     return { status: 201, body: { donation: { ...d, state: D.reconState(d), bookedTo: D.routedCenter(d, s), checkomatic: D.checkomatic(d, s), needsReceipt: D.needsReceipt(d, s) } } };

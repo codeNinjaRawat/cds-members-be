@@ -24,6 +24,7 @@ import { HttpError, audit, document, need, needMember, route, todayCT, type Ctx,
 import { can, inScope, roleOf } from '@/lib/community/access';
 import { findDuplicates, planImport, type Person } from '@/lib/community/member-records';
 import { OrgConfigSchema, mockOrgConfig } from '@/lib/community/org-config';
+import { touchPerson } from './contacts.js';
 import { MembershipSettingsSchema, mockMembershipSettings } from '@/lib/content/membership';
 
 const API = (ctx: Ctx) => ({ org: ctx.orgId, role: 'app_api' as const });
@@ -75,6 +76,7 @@ export const MEMBER_ROUTES: Route[] = [
         if (!inScope(ctx.access, ctx.me, placed.zone, placed.center, m.zip)) { await ctx.db.run(API(ctx), [{ sql: 'DELETE FROM app.members WHERE id = $1', params: [id] }]); throw new HttpError(403, `ZIP ${m.zip} belongs to ${placed.center || 'another area'} – outside your masjid or zone.`); }
         await ctx.db.run(API(ctx), [{ sql: 'SELECT app.refresh_status($1::uuid, $2)', params: [ctx.orgId, id] }]);
         await audit(ctx, 'members', 'Member created', `${m.first} ${m.last}`, id);
+        await touchPerson(ctx, { firstName: m.first, lastName: m.last, email: m.email, phone: m.phone, source: 'office', memberId: id });
         return { status: 201, body: { id, ...r[0] } };
       }
     }
