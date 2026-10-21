@@ -58,3 +58,7 @@ Tables (proposed): giving_verses, giving_impact, giving_needs, donations, donati
 
 ## SaaS (2026-10-15)
 Every endpoint above is **per organization**: the edge resolves the Host (`<slug>.nextgrow.pro`, a verified own domain, or ISGH's member-web) to an org and the API answers for that org only. A new org without published content gets its template's starter content. See `saas-architecture.md`.
+
+## 2026-10-21 – pages v2 (O1)
+- `pages` document: new optional page fields `scope`, `template`, `seo`, `visibility`, `status` (5 states), `publishAt`, `unpublishAt`, `owner`, `reviewedAt`; 30 block types
+  (see web `src/lib/content/pages.ts`). Storage unchanged (opaque JSON); publish projection unchanged. Later (O1.5): per-masjid editor scopes + review state on the admin side.

@@ -9,12 +9,13 @@
  *                                           election's recorded facts change only through the election steps (electionGuard)
  *   DELETE /admin/documents/:key            back to the starter content, published as a new version (history kept)
  */
+import { OrgStructureSchema, mockOrgStructure } from '@/lib/community/org-structure';
 import { one, rows } from '../db/sql.js';
 import { HttpError, audit, document, need, route, todayCT, type Ctx, type Route } from '../http/core.js';
 import { REGISTRY, isDocKey, permissionToPublish, type DocKey } from '../registry.js';
 import { project } from './projections.js';
 import { starterFor } from '../platform/starter.js';
-import { AccessSchema, can, teamChangeProblem, type AccessDoc } from '@/lib/community/access';
+import { AccessSchema, can, teamChangeProblem, type AccessDoc, pagesChangeProblem } from '@/lib/community/access';
 import { IntegrationsSchema, fourEyes } from '@/lib/integrations/integrations';
 import { checkContrast, type ThemesFile } from '@/lib/theme/theme-css';
 import { ElectionsSchema, type ElectionsDoc } from '@/lib/community/elections';
@@ -45,6 +46,7 @@ const issuesOf = (e: { issues: { path: (string | number)[]; message: string }[] 
 
 /** Who may publish this key: its permission – or, for the admin list, team.manage limited by teamChangeProblem. */
 function mayPublish(ctx: Ctx, key: DocKey) {
+  if (key === 'pages' && ctx.me && !can(ctx.access, ctx.me, 'content.publish', todayCT()) && can(ctx.access, ctx.me, 'center.content', todayCT())) return; // masjid editors: the change itself is checked below
   if (key === 'admin-access' && ctx.me && !can(ctx.access, ctx.me, 'admins.manage', todayCT()) && can(ctx.access, ctx.me, 'team.manage', todayCT())) return;
   need(ctx, permissionToPublish(key));
 }
@@ -74,6 +76,13 @@ export const DOCUMENT_ROUTES: Route[] = [
       const approvers = ctx.access.admins.filter((a) => a.id !== ctx.me!.id && can(ctx.access, a, 'integrations.manage', today)).map((a) => a.id);
       const fe = before.success ? fourEyes(before.data, parsed.data as never, ctx.me!.id, approvers) : null;
       if (fe) throw new HttpError(409, fe);
+    }
+    if (key === 'pages' && !can(ctx.access, ctx.me, 'content.publish', today)) {
+      // O1.5 – a masjid editor may only change pages of their own masajid and may not publish them
+      const before = await document(ctx.db, ctx.orgId, 'pages') as Record<string, { slug: string; status: string; scope: { kind: 'org' } | { kind: 'masjid'; center: string } }>;
+      const mp = OrgStructureSchema.safeParse(await document(ctx.db, ctx.orgId, 'org-structure')); const map = mp.success ? mp.data : mockOrgStructure;
+      const problem = pagesChangeProblem(before ?? {}, parsed.data as typeof before, ctx.me!, ctx.access, (id) => map.centers.find((c) => c.id === id)?.name ?? '', (name) => map.centers.find((c) => c.name === name)?.zone ?? '');
+      if (problem) throw new HttpError(403, problem);
     }
     if (key === 'admin-access' && !can(ctx.access, ctx.me, 'admins.manage', today)) {
       const tp = teamChangeProblem(ctx.access, AccessSchema.parse(parsed.data) as AccessDoc, ctx.me!, today);
