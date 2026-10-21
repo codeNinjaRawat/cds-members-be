@@ -63,11 +63,14 @@ export const CHECKOUT_ROUTES: Route[] = [
     let amount = 0, ref = '', description = '', email = '', payload: Record<string, unknown> = {}, monthly = false;
     if (kind === 'dues') {
       const ids = (Array.isArray(b.paymentIds) ? b.paymentIds : []).map(String).filter((x) => /^[0-9a-f-]{36}$/.test(x)); if (!ids.length) throw new HttpError(400, 'Which payment?');
-      const ps = (await rows(ctx.db, API(ctx), `SELECT p.id::text, p.status, p.amount_cents, p.method, p.member_id, m.email, m.first_name || ' ' || m.last_name AS name FROM app.payments p JOIN app.members m ON m.org_id = p.org_id AND m.id = p.member_id WHERE p.id = ANY(ARRAY(SELECT jsonb_array_elements_text($1::jsonb))::uuid[])`, [JSON.stringify(ids)])) as { id: string; status: string; amount_cents: number; method: string; member_id: string; email: string; name: string }[];
+      const ps = (await rows(ctx.db, API(ctx), `SELECT p.id::text, p.status, p.amount_cents, p.method, p.member_id, m.email, m.first_name || ' ' || m.last_name AS name, m.record->>'householdOf' AS household_of FROM app.payments p JOIN app.members m ON m.org_id = p.org_id AND m.id = p.member_id WHERE p.id = ANY(ARRAY(SELECT jsonb_array_elements_text($1::jsonb))::uuid[])`, [JSON.stringify(ids)])) as { id: string; status: string; amount_cents: number; method: string; member_id: string; email: string; name: string; household_of: string | null }[];
       if (ps.length !== ids.length) throw new HttpError(404, 'No such payment.');
       if (ps.some((p) => p.status !== 'pending' && p.status !== 'failed')) throw new HttpError(409, 'This payment is not waiting for a card.');
-      if (new Set(ps.map((p) => p.member_id)).size > 1) throw new HttpError(400, 'One member per checkout.');
-      amount = ps.reduce((a, p) => a + p.amount_cents, 0); ref = ids.join(','); email = ps[0].email; description = `Membership dues – ${ps[0].name}`;
+      // one person pays for their household in one go: every other row must belong to a family member on their application
+      const heads = ps.filter((p) => !p.household_of || !ps.some((q) => q.member_id === p.household_of));
+      const head = heads[0]; if (!head || heads.some((p) => p.member_id !== head.member_id)) throw new HttpError(400, 'One household per checkout.');
+      const others = Array.from(new Set(ps.filter((p) => p.member_id !== head.member_id).map((p) => p.member_id))).length;
+      amount = ps.reduce((a, p) => a + p.amount_cents, 0); ref = ids.join(','); email = head.email; description = `Membership dues – ${head.name}${others ? ` + ${others} family member${others === 1 ? '' : 's'}` : ''}`;
     } else if (kind === 'event') {
       const token = String(b.token ?? ''); const r = await one<{ id: string; status: string; total_cents: number; paid_cents: number; email: string; event_id: string }>(ctx.db, API(ctx), `SELECT id, status, total_cents, paid_cents, email::text, event_id FROM app.registrations WHERE id = $1 AND manage_hash = $2`, [String(b.ref ?? ''), sha256hex(token)]);
       if (!r) throw new HttpError(404, 'No such registration.');

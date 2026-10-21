@@ -75,12 +75,14 @@ ok(ev2.status === 200 && ev2.body.alreadyApplied?.applicationId === sub.body.app
   const mem = (n: number, over = {}) => ({ firstName: `Kin${n}`, lastName: 'Head', email: `kin${n}.head@example.org`, phone: `(713) 555-017${n}`, dob: '1995-03-0' + n, ...over });
   const bad = await call('POST', '/public/membership/applications', { ...base, plan: { ...base.plan, members: [mem(1, { email: fe }), mem(2, { dob: '2015-01-01' })] }, joinToken: fv.body.joinToken });
   ok(bad.status === 422 && bad.body.detail['plan.members.0.email'] && bad.body.detail['plan.members.1.dob'], `family member rules: own email, adult (${JSON.stringify(bad.body.detail)})`);
-  const good = await call('POST', '/public/membership/applications', { ...base, plan: { ...base.plan, members: [mem(1), mem(2)] }, joinToken: fv.body.joinToken });
+  const good = await call('POST', '/public/membership/applications', { ...base, plan: { ...base.plan, members: [mem(1), mem(2)] }, checkout: { method: 'card' }, joinToken: fv.body.joinToken });
   const kids = await one<any>(db, OWNER, `SELECT count(*)::int AS n, bool_and(record->>'householdOf' = $1) AS linked, bool_and(street <> '') AS addr FROM app.members WHERE email IN ('kin1.head@example.org', 'kin2.head@example.org')`, [good.body.memberId]);
   const pays = await one<any>(db, OWNER, `SELECT count(DISTINCT member_id)::int AS who, sum(amount_cents)::int AS cents FROM app.payments WHERE application_id = $1`, [good.body.applicationId]);
   const mails = await one<any>(db, OWNER, `SELECT count(*)::int AS n FROM platform.outbox WHERE kind = 'join-family' AND to_address IN ('kin1.head@example.org', 'kin2.head@example.org')`);
   ok(good.status === 201 && good.body.amountCents === good.body.lines.reduce((a: number, l: any) => a + l.cents, 0) && kids.n === 2 && kids.linked && kids.addr, `two family members: own records, linked, same address (${good.status} ${good.body?.error ?? ''} ${good.body.amountCents})`);
   ok(pays.who === 3 && pays.cents === good.body.amountCents && mails.n === 2, `each member has their own dues row (${pays.who} people, $${pays.cents / 100}); family members emailed`);
+  const co = await call('POST', '/public/checkout', { kind: 'dues', paymentIds: good.body.payment.checkout.paymentIds });
+  ok(co.status === 201 && co.body.amountCents === good.body.amountCents && co.body.url, `the household pays in one card checkout (${co.status} ${co.body.error ?? ''})`);
   await call('PUT', '/admin/documents/membership-settings', { data: ms.body.data, note: 'back' }, 'owner');
 }
 
