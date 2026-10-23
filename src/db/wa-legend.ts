@@ -65,7 +65,7 @@ async function main() {
       const v = voting(g); if (v) { const cur = votingOf.get(m.id) ?? {}; cur[v.status === 'online' ? `online${v.year}` : v.year] = v.status === 'online' ? 'yes' : v.status; votingOf.set(m.id, cur); }
       // real groups: this year's and last year's lists (older years stay on the record as history – they would only bloat the groups document)
       const yr = /(\d{4})/.exec(g)?.[1]; if (yr && Number(yr) < THIS_YEAR - 1) continue;
-      const id = `${slug(g)}-wa`; const e = groupMembers.get(id) ?? { name: `${g} (Wild Apricot)`, ids: [] }; e.ids.push(m.id); groupMembers.set(id, e);   // kept apart from our own rule-based groups
+      const id = `${slug(g).slice(0, 37)}-wa`; const e = groupMembers.get(id) ?? { name: `${g} (Wild Apricot)`, ids: [] }; e.ids.push(m.id); groupMembers.set(id, e);   // kept apart from our own rule-based groups
     }
   }
   console.log(`${body.length} rows in the file · ${members.length} imported people matched · ${unknown} rows not imported (skipped by the import)`);
@@ -99,6 +99,16 @@ async function main() {
     if (i >= 0) doc.groups[i] = next; else doc.groups.push(next);
   }
   await saveDocument(db, org.id, 'groups', GroupsSchema.parse(doc), 'Import', 'Wild Apricot group participation');
+  // 6. People: every member (with an email) has their contact row – same as migration 0036, re-run here because an import after it adds people
+  await db.run(A, [
+    { sql: `INSERT INTO app.contacts (org_id, center_id, first_name, last_name, email, phone, source, member_id, became_member_at, created_at, last_seen_at)
+        SELECT DISTINCT ON (lower(m.email::text)) m.org_id, m.center_id, m.first_name, m.last_name, m.email, coalesce(regexp_replace(m.phone, '\\D', '', 'g'), ''), 'member', m.id,
+               coalesce(m.approved_on, m.applied_on)::timestamptz, coalesce(m.applied_on::timestamptz, now()), now()
+        FROM app.members m WHERE m.org_id = $1::uuid AND m.email <> '' AND m.archived IS NULL
+          AND NOT EXISTS (SELECT 1 FROM app.contacts c WHERE c.org_id = m.org_id AND lower(c.email::text) = lower(m.email::text))
+        ORDER BY lower(m.email::text), m.approved_on DESC NULLS LAST ON CONFLICT DO NOTHING`, params: [org.id] },
+    { sql: `UPDATE app.contacts c SET member_id = m.id, became_member_at = coalesce(c.became_member_at, coalesce(m.approved_on, m.applied_on)::timestamptz)
+        FROM app.members m WHERE m.org_id = c.org_id AND c.org_id = $1::uuid AND lower(m.email::text) = lower(c.email::text) AND m.archived IS NULL AND c.member_id IS NULL`, params: [org.id] }]);
   await db.run(A, [{ sql: 'SELECT app.refresh_status($1::uuid)', params: [org.id] }]);
   const sum = (await rows(db, A, `SELECT status, count(*)::int AS n FROM app.members GROUP BY status ORDER BY 2 DESC`)) as { status: string; n: number }[];
   console.log(`Done. Members now: ${sum.map((s) => `${s.n} ${s.status}`).join(' · ')}. Groups: ${groupMembers.size}.`);
