@@ -46,7 +46,8 @@ async function main() {
   console.log(`Kept: ${admins?.n ?? 0} admins, ${docs?.n ?? 0} settings documents, zones and masajid, events, gifts, help desk, tasks, audit log.`);
   if (!flag('--yes')) { console.log('Nothing changed. Add --yes to wipe and rebuild.'); await db.close(); return; }
 
-  for (const w of WIPE) await db.run(A, [{ sql: `DELETE FROM ${w.table} WHERE org_id = $1::uuid${w.where ? ` AND ${w.where}` : ''}`, params: [org.id] }]).catch((e: Error) => console.warn(`  (${w.table}: ${e.message.split('\n')[0]})`));
+  for (const w of WIPE) await db.run(A, [{ sql: `DELETE FROM ${w.table} WHERE org_id = $1::uuid${w.where ? ` AND ${w.where}` : ''}`, params: [org.id] }])
+    .catch(() => db.run(O, [{ sql: `DELETE FROM ${w.table} WHERE org_id = $1::uuid${w.where ? ` AND ${w.where}` : ''}`, params: [org.id] }]).catch((e: Error) => console.warn(`  (${w.table}: ${e.message.split('\n')[0]})`)));   // a few tables are owner-only
   // member sessions, app tokens and join codes (platform side) – admin sessions stay
   await db.run(O, [
     { sql: `DELETE FROM platform.app_refresh_tokens WHERE org_id = $1::uuid`, params: [org.id] },

@@ -28,7 +28,7 @@ const PER_IP_15MIN = () => Number(process.env.CONTACTS_PER_IP ?? 30);
 
 type Row = { id: string; masjid_id: string | null; first_name: string; last_name: string; email: string; phone: string; source: string; note: string; created_at: string; last_seen_at: string; member_id: string | null };
 const SELECT = `SELECT c.id, k.code AS masjid_id, c.first_name, c.last_name, c.email::text, c.phone, c.source, c.note, to_json(c.created_at)#>>'{}' AS created_at, to_json(c.last_seen_at)#>>'{}' AS last_seen_at,
-  (SELECT m.id FROM app.members m WHERE m.org_id = c.org_id AND lower(m.email::text) = lower(c.email::text) AND m.archived IS NULL ORDER BY m.approved_on DESC NULLS LAST LIMIT 1) AS member_id
+  (SELECT m.id FROM app.members m WHERE m.org_id = c.org_id AND m.email = c.email AND m.archived IS NULL ORDER BY m.approved_on DESC NULLS LAST LIMIT 1) AS member_id
   FROM app.contacts c LEFT JOIN app.centers k ON k.org_id = c.org_id AND k.id = c.center_id`;
 const shape = (r: Row) => ({ contactId: r.id, masjidId: r.masjid_id, firstName: r.first_name, lastName: r.last_name, email: r.email, phone: r.phone, source: r.source, note: r.note, createdAt: r.created_at, lastSeenAt: r.last_seen_at, memberId: r.member_id });
 
@@ -122,7 +122,7 @@ export async function touchPerson(ctx: Pick<Ctx, 'db' | 'orgId'>, p: PersonTouch
   const first = p.firstName.trim().slice(0, 60) || 'Friend', last = p.lastName.trim().slice(0, 60);
   try {
     const api = { org: ctx.orgId, role: 'app_api' as const };
-    const cur = await one<{ id: string; phone: string }>(ctx.db, api, `SELECT id, phone FROM app.contacts WHERE lower(email::text) = $1 ORDER BY (phone = $2 AND $2 <> '') DESC, last_seen_at DESC LIMIT 1`, [email, phone]);
+    const cur = await one<{ id: string; phone: string }>(ctx.db, api, `SELECT id, phone FROM app.contacts WHERE email = $1 ORDER BY (phone = $2 AND $2 <> '') DESC, last_seen_at DESC LIMIT 1`, [email, phone]);
     if (cur) {
       await ctx.db.run(api, [{ sql: `UPDATE app.contacts SET first_name = CASE WHEN first_name IN ('', 'Friend', 'Donor') THEN $2 ELSE first_name END, last_name = CASE WHEN last_name = '' THEN $3 ELSE last_name END,
           phone = CASE WHEN phone = '' THEN $4 ELSE phone END, center_id = coalesce(center_id, NULLIF($5, '')::uuid), member_id = coalesce(member_id, NULLIF($6, '')), became_member_at = coalesce(became_member_at, CASE WHEN NULLIF($6, '') IS NULL THEN NULL ELSE now() END),
@@ -136,7 +136,7 @@ export async function touchPerson(ctx: Pick<Ctx, 'db' | 'orgId'>, p: PersonTouch
 
 /** The join form starts with what the person already told us as a contact (app / event / gift): name and mobile. */
 export async function contactPrefill(ctx: Pick<Ctx, 'db' | 'orgId'>, email: string): Promise<Record<string, unknown>> {
-  const c = await one<{ first_name: string; last_name: string; phone: string }>(ctx.db, { org: ctx.orgId, role: 'app_api' }, `SELECT first_name, last_name, phone FROM app.contacts WHERE lower(email::text) = $1 ORDER BY last_seen_at DESC LIMIT 1`, [email.toLowerCase()]).catch(() => null);
+  const c = await one<{ first_name: string; last_name: string; phone: string }>(ctx.db, { org: ctx.orgId, role: 'app_api' }, `SELECT first_name, last_name, phone FROM app.contacts WHERE email = $1 ORDER BY last_seen_at DESC LIMIT 1`, [email.toLowerCase()]).catch(() => null);
   if (!c || c.first_name === 'Friend' || c.first_name === 'Donor') return {};
   const about: Record<string, string> = { firstName: c.first_name, lastName: c.last_name };
   if (c.phone.length === 10) about.phone = `(${c.phone.slice(0, 3)}) ${c.phone.slice(3, 6)}-${c.phone.slice(6)}`;
@@ -144,16 +144,24 @@ export async function contactPrefill(ctx: Pick<Ctx, 'db' | 'orgId'>, email: stri
 }
 
 type PersonRow = Row & { member_status: string | null; member_plan: string | null; approved_on: string | null; gifts_count: number; gifts_cents: number; last_gift_on: string | null; events_count: number; tags: string[]; became_member_at: string | null; first_gift_at: string | null };
+/* One row per person. Whole-table joins on purpose: per-person lookups by email cannot use the index under row security
+ * (citext equality is not leakproof), so with 10k people they took 15+ seconds; hash joins take well under a second. */
 const PEOPLE_SELECT = `SELECT c.id, k.code AS masjid_id, c.first_name, c.last_name, c.email::text, c.phone, c.source, c.note, c.tags, to_json(c.created_at)#>>'{}' AS created_at, to_json(c.last_seen_at)#>>'{}' AS last_seen_at,
     to_json(c.became_member_at)#>>'{}' AS became_member_at, to_json(c.first_gift_at)#>>'{}' AS first_gift_at,
-    m.id AS member_id, m.status AS member_status, m.plan AS member_plan, m.approved_on::text AS approved_on,
-    coalesce(g.n, 0)::int AS gifts_count, coalesce(g.cents, 0)::bigint AS gifts_cents, g.last::text AS last_gift_on,
+    coalesce(mi.id, me.id) AS member_id, coalesce(mi.status, me.status) AS member_status, coalesce(mi.plan, me.plan) AS member_plan, coalesce(mi.approved_on, me.approved_on)::text AS approved_on,
+    (coalesce(ge.n, 0) + coalesce(gm.n, 0))::int AS gifts_count, (coalesce(ge.cents, 0) + coalesce(gm.cents, 0))::bigint AS gifts_cents, greatest(ge.last, gm.last)::text AS last_gift_on,
     coalesce(e.n, 0)::int AS events_count
   FROM app.contacts c
   LEFT JOIN app.centers k ON k.org_id = c.org_id AND k.id = c.center_id
-  LEFT JOIN LATERAL (SELECT m.id, m.status, m.plan, m.approved_on FROM app.members m WHERE m.org_id = c.org_id AND m.archived IS NULL AND coalesce(m.record->>'joinStage', '') <> 'incomplete' AND (m.id = c.member_id OR lower(m.email::text) = lower(c.email::text)) ORDER BY (m.id = c.member_id) DESC, m.approved_on DESC NULLS LAST LIMIT 1) m ON true
-  LEFT JOIN LATERAL (SELECT count(*) AS n, sum(d.amount_cents) AS cents, max(d.given_on) AS last FROM app.donations d WHERE d.org_id = c.org_id AND d.state IN ('ok', 'awaiting-payout') AND (lower(d.donor_email::text) = lower(c.email::text) OR (m.id IS NOT NULL AND d.member_id = m.id))) g ON true
-  LEFT JOIN LATERAL (SELECT count(*) AS n FROM app.registrations r WHERE r.org_id = c.org_id AND lower(r.email::text) = lower(c.email::text)) e ON true`;
+  LEFT JOIN app.members mi ON mi.org_id = c.org_id AND mi.id = c.member_id AND mi.archived IS NULL AND coalesce(mi.record->>'joinStage', '') <> 'incomplete'
+  LEFT JOIN (SELECT DISTINCT ON (m.org_id, m.email) m.org_id, m.email, m.id, m.status, m.plan, m.approved_on FROM app.members m
+             WHERE m.archived IS NULL AND m.email <> '' AND coalesce(m.record->>'joinStage', '') <> 'incomplete' ORDER BY m.org_id, m.email, m.approved_on DESC NULLS LAST) me
+    ON mi.id IS NULL AND me.org_id = c.org_id AND me.email = c.email
+  LEFT JOIN (SELECT d.org_id, d.donor_email AS email, count(*) AS n, sum(d.amount_cents) AS cents, max(d.given_on) AS last FROM app.donations d
+             WHERE d.state IN ('ok', 'awaiting-payout') AND d.donor_email <> '' GROUP BY 1, 2) ge ON ge.org_id = c.org_id AND ge.email = c.email
+  LEFT JOIN (SELECT d.org_id, d.member_id, count(*) AS n, sum(d.amount_cents) AS cents, max(d.given_on) AS last FROM app.donations d
+             WHERE d.state IN ('ok', 'awaiting-payout') AND d.member_id IS NOT NULL AND d.donor_email = '' GROUP BY 1, 2) gm ON gm.org_id = c.org_id AND gm.member_id = coalesce(mi.id, me.id)
+  LEFT JOIN (SELECT r.org_id, r.email, count(*) AS n FROM app.registrations r GROUP BY 1, 2) e ON e.org_id = c.org_id AND e.email = c.email`;
 /** contact → applicant (applied, not approved yet) → member; donor is on top of any of them */
 const stageOf = (r: PersonRow) => { const m = r.member_id ? (r.approved_on ? 'member' : 'applicant') : ''; return m && r.gifts_count > 0 ? `${m}+donor` : m || (r.gifts_count > 0 ? 'donor' : 'contact'); };
 const person = (r: PersonRow) => ({ ...shape(r), tags: r.tags ?? [], stage: stageOf(r), becameMemberAt: r.became_member_at, firstGiftAt: r.first_gift_at,
@@ -165,7 +173,7 @@ export const PEOPLE_ROUTES: Route[] = [
     need(ctx, 'members.view');
     const q = (ctx.req.query.get('q') ?? '').trim().toLowerCase(); const masjid = (ctx.req.query.get('masjid') ?? '').trim(); const kind = ctx.req.query.get('kind') ?? 'all';
     const list = (await rows(ctx.db, API(ctx), `${PEOPLE_SELECT} WHERE ($1 = '' OR lower(c.first_name || ' ' || c.last_name || ' ' || c.email::text || ' ' || c.phone) LIKE '%' || $1 || '%') AND ($2 = '' OR k.code = $2)
-      ORDER BY c.last_seen_at DESC LIMIT 5000`, [q, masjid])) as PersonRow[];
+      ORDER BY c.last_seen_at DESC LIMIT 20000`, [q, masjid])) as PersonRow[];
     const people = list.map(person).filter((p) => kind === 'all' || (kind === 'contacts' ? p.stage === 'contact' : kind === 'members' ? p.stage.startsWith('member') : kind === 'applicants' ? p.stage.startsWith('applicant') : kind === 'donors' ? p.giving.count > 0 : true));
     const all = list.map(stageOf);
     const funnel = { people: all.length, contacts: all.filter((s) => s === 'contact').length, applicants: all.filter((s) => s.startsWith('applicant')).length, members: all.filter((s) => s.startsWith('member')).length, donors: all.filter((s) => s.endsWith('donor')).length, both: all.filter((s) => s === 'member+donor').length };
@@ -175,8 +183,8 @@ export const PEOPLE_ROUTES: Route[] = [
     need(ctx, 'members.view');
     const r = (await one<PersonRow>(ctx.db, API(ctx), `${PEOPLE_SELECT} WHERE c.id = $1::uuid`, [mm[1]!])); if (!r) throw new HttpError(404, 'No such person.');
     const gifts = await rows(ctx.db, API(ctx), `SELECT d.id, d.given_on::text AS given_on, d.amount_cents::int AS amount_cents, d.method, f.name AS fund FROM app.donations d LEFT JOIN app.funds f ON f.org_id = d.org_id AND f.id = d.fund_id
-      WHERE d.org_id = $1::uuid AND d.state IN ('ok', 'awaiting-payout') AND (lower(d.donor_email::text) = $2 OR ($3 <> '' AND d.member_id = $3)) ORDER BY d.given_on DESC LIMIT 20`, [ctx.orgId, r.email.toLowerCase(), r.member_id ?? '']);
-    const regs = await rows(ctx.db, API(ctx), `SELECT r.id, r.status, ev.title, ev.starts_at::text AS starts_at FROM app.registrations r JOIN app.events ev ON ev.org_id = r.org_id AND ev.id = r.event_id WHERE r.org_id = $1::uuid AND lower(r.email::text) = $2 ORDER BY ev.starts_at DESC LIMIT 20`, [ctx.orgId, r.email.toLowerCase()]).catch(() => []);
+      WHERE d.org_id = $1::uuid AND d.state IN ('ok', 'awaiting-payout') AND (d.donor_email = $2 OR ($3 <> '' AND d.member_id = $3)) ORDER BY d.given_on DESC LIMIT 20`, [ctx.orgId, r.email.toLowerCase(), r.member_id ?? '']);
+    const regs = await rows(ctx.db, API(ctx), `SELECT r.id, r.status, ev.title, ev.starts_at::text AS starts_at FROM app.registrations r JOIN app.events ev ON ev.org_id = r.org_id AND ev.id = r.event_id WHERE r.org_id = $1::uuid AND r.email = $2 ORDER BY ev.starts_at DESC LIMIT 20`, [ctx.orgId, r.email.toLowerCase()]).catch(() => []);
     return ok({ ...person(r), gifts, registrations: regs });
   }),
   route('PATCH', /^\/admin\/people\/([0-9a-f-]{36})$/, async (ctx, mm) => {
