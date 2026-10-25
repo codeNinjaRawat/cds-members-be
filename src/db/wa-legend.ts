@@ -75,20 +75,28 @@ async function main() {
   if (dry) { console.log('Dry run – nothing changed.'); await db.close(); return; }
 
   const batches = <T,>(a: T[], n = 500) => { const out: T[][] = []; for (let i = 0; i < a.length; i += n) out.push(a.slice(i, i + n)); return out; };
+  const step = (t: string) => console.log(`… ${t}`);
+  step('1/6 archiving people who were never members');
   // 1. not members → archived (restorable) + a contact row
   for (const part of batches(notMembers)) await db.run(A, [{ sql: `UPDATE app.members SET archived = jsonb_build_object('on', current_date::text, 'by', 'Import', 'reason', 'Wild Apricot: Membership enabled = no – never a member (' || coalesce(record->'wildapricot'->>'status', 'no status') || ')') WHERE id = ANY(ARRAY(SELECT jsonb_array_elements_text($1::jsonb))) AND archived IS NULL`, params: [JSON.stringify(part)] }]);
-  for (const m of contacts) await touchPerson({ db, orgId: org.id }, { firstName: m.first_name, lastName: m.last_name, email: m.email, phone: m.phone, source: 'import', centerId: m.center_id });
+  step(`1/6 contact rows for ${contacts.length} people (this is the slow part)`);
+  let done = 0;
+  for (const m of contacts) { if (++done % 500 === 0) step(`   ${done}/${contacts.length}`); await touchPerson({ db, orgId: org.id }, { firstName: m.first_name, lastName: m.last_name, email: m.email, phone: m.phone, source: 'import', centerId: m.center_id }); }
+  step('2/6 incomplete applications');
   // 2. Pending - New → incomplete, not approved, imported terms set aside
   for (const part of batches(incomplete)) await db.run(A, [
     { sql: `UPDATE app.members SET record = record || '{"joinStage":"incomplete"}'::jsonb, approved_on = NULL WHERE id = ANY(ARRAY(SELECT jsonb_array_elements_text($1::jsonb)))`, params: [JSON.stringify(part)] },
     { sql: `UPDATE app.memberships SET status = 'cancelled' WHERE member_id = ANY(ARRAY(SELECT jsonb_array_elements_text($1::jsonb))) AND how = 'imported' AND status = 'active'`, params: [JSON.stringify(part)] }]);
+  step('3/6 ID checks');
   // 3. ID number on file → ID check done (no number kept)
   for (const part of batches(idOnFile)) await db.run(A, [
     { sql: `UPDATE app.members SET id_check = 'verified', record = record || '{"idNumberOnFile":true}'::jsonb WHERE id = ANY(ARRAY(SELECT jsonb_array_elements_text($1::jsonb)))`, params: [JSON.stringify(part)] },
     { sql: `INSERT INTO app.id_checks (org_id, member_id, doc_type, status, reason, checked_by, checked_at, purge_after) SELECT $1::uuid, x, 'other', 'verified', 'ID number on file in Wild Apricot (TX DL/ID)', 'Import', now(), current_date + 30 FROM jsonb_array_elements_text($2::jsonb) AS x ON CONFLICT DO NOTHING`, params: [org.id, JSON.stringify(part)] }]);
+  step('4/6 voting marks');
   // 4. voting marks on the record
   const vEntries = [...votingOf.entries()].map(([id, v]) => ({ id, v }));
   for (const part of batches(vEntries)) await db.run(A, [{ sql: `UPDATE app.members m SET record = record || jsonb_build_object('voting', x.v) FROM jsonb_to_recordset($1::jsonb) AS x(id text, v jsonb) WHERE m.id = x.id`, params: [JSON.stringify(part)] }]);
+  step('5/6 groups and terms');
   // 5. groups document: import-managed groups get their members replaced; everything else is left alone
   const curDoc = await one<{ data: unknown }>(db, A, `SELECT data FROM app.documents WHERE key = 'groups'`);
   const parsed = GroupsSchema.safeParse(curDoc?.data ?? { enabled: true, groups: [] }); const doc: GroupsDoc = parsed.success ? parsed.data : { enabled: true, groups: [] };
@@ -106,6 +114,13 @@ async function main() {
       FROM app.members m WHERE m.org_id = $1::uuid AND m.archived IS NULL AND m.approved_on IS NOT NULL AND m.plan LIKE 'life%'
         AND NOT EXISTS (SELECT 1 FROM app.memberships x WHERE x.org_id = m.org_id AND x.member_id = m.id AND x.ends_on IS NULL AND x.status = 'active') RETURNING member_id`, params: [org.id] }]);
   if (lt[0].length) console.log(`Lifetime terms added for ${lt[0].length} members.`);
+  // 5c. Active in Wild Apricot but no renewal date (Checkomatic payroll members): paid through this membership year, not "never paid"
+  const yr = `${new Date().getFullYear()}-12-31`;
+  const ck = await db.run(A, [{ sql: `UPDATE app.memberships x SET ends_on = $2::date FROM app.members m
+      WHERE m.org_id = x.org_id AND m.id = x.member_id AND m.org_id = $1::uuid AND x.how = 'imported' AND x.status = 'active' AND x.ends_on IS NULL
+        AND m.plan NOT LIKE 'life%' AND m.archived IS NULL AND m.approved_on IS NOT NULL AND lower(m.record->'wildapricot'->>'status') = 'active' RETURNING x.member_id`, params: [org.id, yr] }]);
+  if (ck[0].length) console.log(`Open terms closed at ${yr} for ${ck[0].length} active members without a renewal date.`);
+  step('6/6 people and status refresh');
   // 6. People: every member (with an email) has their contact row – same as migration 0036, re-run here because an import after it adds people
   await db.run(A, [
     { sql: `INSERT INTO app.contacts (org_id, center_id, first_name, last_name, email, phone, source, member_id, became_member_at, created_at, last_seen_at)
