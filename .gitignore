@@ -40,3 +40,4 @@ admin-passwords.json
 
 # the Wild Apricot export travels encrypted with EDGE_KEY (wa:rebuild / wa:legend unpack it on the server)
 !imports/*.enc
+!imports/*.gz
