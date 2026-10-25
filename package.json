@@ -26,6 +26,7 @@
     "check:production": "node --import tsx --import ./src/load-env.ts src/production.ts",
     "import:wa": "node --import tsx --import ./src/load-env.ts src/db/import-wildapricot.ts",
     "wa:legend": "node --import tsx --import ./src/load-env.ts src/db/wa-legend.ts",
+    "wa:rebuild": "node --import tsx --import ./src/load-env.ts src/db/wa-rebuild.ts",
     "report:members": "node --import tsx --import ./src/load-env.ts src/db/report.ts",
     "admins": "node --import tsx --import ./src/load-env.ts src/db/admins.ts",
     "db:test-sql": "node --import tsx --import ./src/load-env.ts src/db/sql-tests.ts",
