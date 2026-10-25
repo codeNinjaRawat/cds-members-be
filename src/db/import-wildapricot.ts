@@ -14,6 +14,7 @@
  *     Never imported: driver-license / ID numbers, pictures and file links, passwords, balances.
  */
 import { readFileSync } from 'node:fs';
+import { ensureExport } from './wa-file.js';
 import { openDb, one, rows, type Db, type Statement } from './sql.js';
 import { saveDocument } from '../modules/projections.js';
 import { demoMembers } from '@/lib/members/members';
@@ -186,7 +187,7 @@ async function main() {
   const args = process.argv.slice(2); const file = args.find((a) => !a.startsWith('--'));
   const flag = (f: string) => args.includes(f); const orgSlug = (args[args.indexOf('--org') + 1] && args.includes('--org')) ? args[args.indexOf('--org') + 1] : (process.env.DEFAULT_ORG ?? 'isgh');
   if (!file) { console.log('Usage: npm run import:wa -- "path/to/Contacts.xml" [--org isgh] [--dry-run] [--keep-demo] [--keep-structure] [--plan-preset isgh-2026]'); process.exit(1); }
-  const text = readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+  const text = readFileSync(ensureExport(file), 'utf8').replace(/^\uFEFF/, '');
   const table = text.trimStart().startsWith('<') ? readExcelXml(text) : readCsv(text);
   const today = new Date().toISOString().slice(0, 10);
   const { rows: list, skipped } = toRows(table, today);

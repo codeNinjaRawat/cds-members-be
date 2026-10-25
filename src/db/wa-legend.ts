@@ -17,6 +17,7 @@
  *  Zone / Center             → already applied by the import (zone prefix + masjid name).
  */
 import { readFileSync } from 'node:fs';
+import { ensureExport } from './wa-file.js';
 import { openDb, one, rows } from './sql.js';
 import { readExcelXml } from './import-wildapricot.js';
 import { saveDocument } from '../modules/projections.js';
@@ -45,7 +46,7 @@ async function main() {
   const db = openDb(); const dry = flag('--dry-run');
   const org = await one<{ id: string }>(db, { org: null, role: 'owner' }, 'SELECT id FROM platform.organizations WHERE slug = $1', [orgSlug]); if (!org) throw new Error(`No organization "${orgSlug}".`);
   const A = { org: org.id, role: 'app_api' as const };
-  const table = readExcelXml(readFileSync(file, 'utf8')); const [head, ...body] = table;
+  const table = readExcelXml(readFileSync(ensureExport(file), 'utf8')); const [head, ...body] = table;
   const col = (n: string) => head.findIndex((h) => h.trim().toLowerCase() === n.toLowerCase()); const get = (r: string[], n: string) => { const i = col(n); return i < 0 ? '' : (r[i] ?? '').trim(); };
   for (const n of ['User ID', 'Membership enabled', 'Membership status', 'TX DL/ID Number', 'Group participation']) if (col(n) < 0) throw new Error(`Column "${n}" is missing.`);
   const members = (await rows(db, A, `SELECT id, external_ids->>'wildapricot' AS ext, first_name, last_name, email::text AS email, phone, center_id::text AS center_id, archived IS NOT NULL AS archived, approved_on IS NOT NULL AS approved, id_check, coalesce(record->>'joinStage', '') AS stage FROM app.members WHERE external_ids ? 'wildapricot'`)) as

@@ -13,6 +13,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { openDb, one, rows } from './sql.js';
+import { ensureExport } from './wa-file.js';
 
 const args = process.argv.slice(2); const flag = (f: string) => args.includes(f);
 const file = args.find((a) => !a.startsWith('--') && args[args.indexOf(a) - 1] !== '--org');
@@ -30,6 +31,7 @@ const WIPE: { table: string; where?: string }[] = [
 
 async function main() {
   if (!file) throw new Error('Give the Wild Apricot export file.');
+  ensureExport(file);
   const db = openDb();
   const org = await one<{ id: string }>(db, { org: null, role: 'owner' }, 'SELECT id FROM platform.organizations WHERE slug = $1', [orgSlug]); if (!org) throw new Error(`No organization "${orgSlug}".`);
   const A = { org: org.id, role: 'app_api' as const }, O = { org: null, role: 'owner' as const };

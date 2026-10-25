@@ -32,8 +32,11 @@ Thumbs.db
 .idea/
 
 # real member exports (personal data – never commit)
-imports/
+imports/*
 _env_server_dev.bak
 
 # development admin passwords (npm run admin:passwords) – never commit
 admin-passwords.json
+
+# the Wild Apricot export travels encrypted with EDGE_KEY (wa:rebuild / wa:legend unpack it on the server)
+!imports/*.enc
