@@ -250,7 +250,7 @@ async function main() {
   for (const part of batches(terms)) {
     await db.run(A, [{ sql: `INSERT INTO app.memberships (org_id, member_id, plan_id, starts_on, ends_on, status, how, created_by)
         SELECT $1::uuid, t.m, t.plan, least(t.s, coalesce(t.e, t.s)), t.e, t.st, 'imported', 'Wild Apricot import' FROM jsonb_to_recordset($2::jsonb) AS t(m text, plan text, s date, e date, st text)
-        WHERE t.e IS NOT NULL OR t.plan = 'life'`, params: [org.id, JSON.stringify(part)] }]);
+        WHERE t.e IS NOT NULL OR t.plan LIKE 'life%'`, params: [org.id, JSON.stringify(part)] }]);
     t += part.length; process.stdout.write(`\r  membership terms ${t} of ${terms.length}`);
   }
   console.log('');

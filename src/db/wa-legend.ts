@@ -100,6 +100,12 @@ async function main() {
     if (i >= 0) doc.groups[i] = next; else doc.groups.push(next);
   }
   await saveDocument(db, org.id, 'groups', GroupsSchema.parse(doc), 'Import', 'Wild Apricot group participation');
+  // 5b. lifetime members: a lifetime term (no end) so they show as Life, not Expired – the first import only knew a plan called "life"
+  const lt = await db.run(A, [{ sql: `INSERT INTO app.memberships (org_id, member_id, plan_id, starts_on, ends_on, status, how, created_by)
+      SELECT m.org_id, m.id, m.plan, coalesce(m.approved_on, m.applied_on), NULL, 'active', 'imported', 'Wild Apricot import'
+      FROM app.members m WHERE m.org_id = $1::uuid AND m.archived IS NULL AND m.approved_on IS NOT NULL AND m.plan LIKE 'life%'
+        AND NOT EXISTS (SELECT 1 FROM app.memberships x WHERE x.org_id = m.org_id AND x.member_id = m.id AND x.ends_on IS NULL AND x.status = 'active') RETURNING member_id`, params: [org.id] }]);
+  if (lt[0].length) console.log(`Lifetime terms added for ${lt[0].length} members.`);
   // 6. People: every member (with an email) has their contact row – same as migration 0036, re-run here because an import after it adds people
   await db.run(A, [
     { sql: `INSERT INTO app.contacts (org_id, center_id, first_name, last_name, email, phone, source, member_id, became_member_at, created_at, last_seen_at)
