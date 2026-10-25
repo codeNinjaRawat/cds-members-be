@@ -9,10 +9,10 @@ import { gunzipSync } from 'node:zlib';
 
 export function ensureExport(file: string): string {
   if (existsSync(file)) return file;
-  const gz = `${file}.gz`;
-  if (existsSync(gz)) { writeFileSync(file, gunzipSync(readFileSync(gz))); console.log(`Unpacked ${file} from ${gz}.`); return file; }   // plain gzip in the repo – nothing to unlock
+  const gzFile = `${file}.gz`;
+  if (existsSync(gzFile)) { writeFileSync(file, gunzipSync(readFileSync(gzFile))); console.log(`Unpacked ${file} from ${gzFile}.`); return file; }   // plain gzip in the repo – nothing to unlock
   const enc = `${file}.gz.enc`;
-  if (!existsSync(enc)) throw new Error(`${file} is missing (and so are ${gz} and ${enc}).`);
+  if (!existsSync(enc)) throw new Error(`${file} is missing (and so are ${gzFile} and ${enc}).`);
   // the key: WA_EXPORT_KEY when set (a key just for this file), else EDGE_KEY
   const keys = [process.env.WA_EXPORT_KEY, process.env.EDGE_KEY].map((k) => (k ?? '').trim().replace(/^["']|["']$/g, '')).filter(Boolean);
   if (!keys.length) throw new Error('Set WA_EXPORT_KEY (or EDGE_KEY) in BE/.env – it unlocks the export file.');
