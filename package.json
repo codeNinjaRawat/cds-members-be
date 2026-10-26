@@ -29,6 +29,7 @@
     "wa:rebuild": "node --import tsx --import ./src/load-env.ts src/db/wa-rebuild.ts",
     "report:members": "node --import tsx --import ./src/load-env.ts src/db/report.ts",
     "admins": "node --import tsx --import ./src/load-env.ts src/db/admins.ts",
+    "admins:masjid": "node --import tsx --import ./src/load-env.ts src/db/masjid-admins.ts",
     "db:test-sql": "node --import tsx --import ./src/load-env.ts src/db/sql-tests.ts",
     "server-dev:check": "node --import tsx --import ./src/load-env.ts src/db/check.ts --env=server-dev --connect",
     "server-dev:migrate": "node --import tsx --import ./src/load-env.ts src/db/migrate.ts --env=server-dev",
