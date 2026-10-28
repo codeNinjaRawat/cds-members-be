@@ -27,6 +27,7 @@
     "import:wa": "node --import tsx --import ./src/load-env.ts src/db/import-wildapricot.ts",
     "wa:legend": "node --import tsx --import ./src/load-env.ts src/db/wa-legend.ts",
     "wa:rebuild": "node --import tsx --import ./src/load-env.ts src/db/wa-rebuild.ts",
+    "wa:masjids": "node --import tsx --import ./src/load-env.ts src/db/wa-masjids.ts",
     "report:members": "node --import tsx --import ./src/load-env.ts src/db/report.ts",
     "admins": "node --import tsx --import ./src/load-env.ts src/db/admins.ts",
     "admins:masjid": "node --import tsx --import ./src/load-env.ts src/db/masjid-admins.ts",

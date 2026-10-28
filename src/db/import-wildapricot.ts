@@ -228,7 +228,8 @@ async function main() {
   const memberRows = todo.map((r) => {
       const centerId = r.place ? centerIds.get(r.place.center) ?? '' : '';
       const zipCenter = r.zip ? st.zipOwner.get(r.zip) : undefined;
-      const override = centerId && r.place && zipCenter !== r.place.center ? { reason: 'Masjid chosen in Wild Apricot', by: 'Import', at: new Date().toISOString(), from: zipCenter ?? '' } : null;
+      // the masjid chosen in Wild Apricot is always locked – left "placed by ZIP", the trigger and every publish of Masjids and zones would move the member by ZIP code (masjid counts drifted, 2026-10-28)
+      const override = centerId && r.place ? { reason: 'Masjid chosen in Wild Apricot', by: 'Import', at: new Date().toISOString(), from: zipCenter ?? '' } : null;
       return { id: idOf.get(r.externalId), first: r.first, middle: r.middle, last: r.last, email: r.email, phone: r.phone, dob: r.dob || null, gender: r.gender, street: r.street, city: r.city, state: r.state, zip: r.zip,
         center_id: centerId || null, override, plan: r.plan, joined: Number(r.joined.slice(0, 4)), applied: r.joined, approved: r.approvedOn || null, prefs: r.prefs, record: r.record, ext: { wildapricot: r.externalId } };
   });
