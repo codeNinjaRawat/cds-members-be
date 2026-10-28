@@ -1,7 +1,7 @@
 /**
  * Wild Apricot column legend (owner, 2026-10-23) applied to the imported people – re-runnable, nothing deleted.
  *
- *   npm run wa:legend -- "C:\path\Contacts.xml" [--org isgh] [--dry-run]
+ *   npm run wa:legend -- "C:\path\Contacts.xml" [--org isgh] [--dry-run] [--voting-only]
  *
  *  Membership enabled = no   → NOT a member (never had a membership on file; "Suspended" and blank rows).
  *                              Their member record is archived (restorable) and they stay in People as a contact.
@@ -63,7 +63,11 @@ async function main() {
     if (get(r, 'TX DL/ID Number') && m.id_check !== 'verified') idOnFile.push(m.id);
     if (enabled !== 'no') for (const g of get(r, 'Group participation').split(/[,;]\s*/).map((x) => x.trim()).filter(Boolean)) {
       if (SKIP.test(g)) continue;
-      const v = voting(g); if (v) { const cur = votingOf.get(m.id) ?? {}; cur[v.status === 'online' ? `online${v.year}` : v.year] = v.status === 'online' ? 'yes' : v.status; votingOf.set(m.id, cur); }
+      const v = voting(g); if (v) { const cur = votingOf.get(m.id) ?? {};
+        if (v.status === 'online') cur[`online${v.year}`] = 'yes';
+        else { const was = cur[v.year]; const both = (was === 'voting' && v.status === 'non-voting') || (was === 'non-voting' && v.status === 'voting');
+          if (both) { cur[v.year] = 'voting'; cur[`conflict${v.year}`] = 'yes'; } else if (was !== 'voting') cur[v.year] = v.status; }   // on both lists: Wild Apricot counts them as voting members – kept as voting and tagged so the office can check
+        votingOf.set(m.id, cur); }
       // real groups: this year's and last year's lists (older years stay on the record as history – they would only bloat the groups document)
       const yr = /(\d{4})/.exec(g)?.[1]; if (yr && Number(yr) < THIS_YEAR - 1) continue;
       const id = `${slug(g).slice(0, 37)}-wa`; const e = groupMembers.get(id) ?? { name: `${g} (Wild Apricot)`, ids: [] }; e.ids.push(m.id); groupMembers.set(id, e);   // kept apart from our own rule-based groups
@@ -74,6 +78,13 @@ async function main() {
   console.log(`Groups: ${[...groupMembers.values()].map((g) => `${g.name} (${g.ids.length})`).join(' · ')}`);
   if (dry) { console.log('Dry run – nothing changed.'); await db.close(); return; }
 
+  if (flag('--voting-only')) {   // only the voting marks (quick; nothing else is touched)
+    const list = [...votingOf.entries()].map(([id, v]) => ({ id, v })); const n = 500;
+    for (let i = 0; i < list.length; i += n) await db.run(A, [{ sql: `UPDATE app.members m SET record = record || jsonb_build_object('voting', x.v) FROM jsonb_to_recordset($1::jsonb) AS x(id text, v jsonb) WHERE m.id = x.id`, params: [JSON.stringify(list.slice(i, i + n))] }]);
+    const c = (await rows(db, A, `SELECT count(*) FILTER (WHERE record->'voting'->>'${THIS_YEAR}' = 'voting')::int AS voting, count(*) FILTER (WHERE record->'voting'->>'conflict${THIS_YEAR}' = 'yes')::int AS both, count(*) FILTER (WHERE record->'voting'->>'${THIS_YEAR}' = 'non-voting')::int AS non_voting FROM app.members WHERE archived IS NULL`)) as { voting: number; both: number; non_voting: number }[];
+    console.log(`Voting marks written for ${list.length} people. ${THIS_YEAR}: ${c[0].voting} on the voting list (${c[0].both} of them also on the non-voting list) · ${c[0].non_voting} on the non-voting list only.`);
+    await db.close(); return;
+  }
   const batches = <T,>(a: T[], n = 500) => { const out: T[][] = []; for (let i = 0; i < a.length; i += n) out.push(a.slice(i, i + n)); return out; };
   const step = (t: string) => console.log(`… ${t}`);
   step('1/6 archiving people who were never members');
